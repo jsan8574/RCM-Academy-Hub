@@ -199,18 +199,27 @@ function passwordField(label = "Temporary password") {
         <button type="button" class="btn" data-generate>New</button>
       </div>
       <span class="hint">They'll be asked to change it the first time they sign in.</span>
-    </label>`;
+    </label>
+    ${emailBox()}`;
+}
+
+// Sent by the "Welcome Emails" Power Automate flow from the team mailbox, usually within minutes
+function emailBox() {
+  return `<label class="check"><input type="checkbox" name="send_email" checked> Email The Sign-In Details To Them
+    <span class="hint">(from the Technical Training mailbox, within a few minutes)</span></label>`;
 }
 
 function wireGenerate(form) {
   form.querySelector("[data-generate]")?.addEventListener("click", () => { form.password.value = generatePassword(); });
 }
 
-function showCredentials(person, password) {
+function showCredentials(person, password, emailed = false) {
   const text = `RCM Academy Hub\n${portalUrl()}\n\nEmail: ${person.email}\nTemporary password: ${password}\n\nYou'll be asked to set your own password when you first sign in.`;
   const { form } = openModal({
-    title: "Share These Sign-In Details",
-    intro: `Send them to ${esc(person.full_name)} privately, for example in a Teams chat.`,
+    title: emailed ? "Sign-In Details Are On Their Way" : "Share These Sign-In Details",
+    intro: emailed
+      ? `${esc(person.full_name)} will get these by email within a few minutes. You can also copy them below, for example for a Teams chat.`
+      : `Send them to ${esc(person.full_name)} privately, for example in a Teams chat.`,
     body: `<div class="credentials">${esc(text)}</div>
            <button type="button" class="btn" data-copy>Copy Sign-In Details</button>`,
     submitLabel: "Done",
@@ -298,11 +307,11 @@ function addPerson(main) {
       const person = { full_name: f.full_name.value.trim(), email: f.email.value.trim().toLowerCase(), role: f.role.value };
       const details = readDetails(f, person.role === "learner");
       const password = f.password.value.trim();
-      const { profile_id } = await manageAccount({ action: "create", ...person, password });
+      const { profile_id, emailed } = await manageAccount({ action: "create", ...person, password, send_email: f.send_email.checked });
       await saveDetails(profile_id, details);
       toast(`Account created for ${person.full_name}.`);
       await load(main);
-      showCredentials(person, password);
+      showCredentials(person, password, emailed);
     },
   });
   wireGenerate(form);
@@ -326,7 +335,8 @@ function addMany(main) {
       ${isAdmin()
         ? `<label class="field">Role For Everyone In This List <select class="select" name="role">${roleOptions()}</select></label>`
         : '<input type="hidden" name="role" value="learner">'}
-      <div class="notice info">Market can be US, Sri Lanka, India, Philippines, or another market. Each person gets their own temporary password, and you can download everyone's sign-in details when it finishes.</div>`,
+      <div class="notice info">Market can be US, Sri Lanka, India, Philippines, or another market. Each person gets their own temporary password, and you can download everyone's sign-in details when it finishes.</div>
+      ${emailBox()}`,
     submitLabel: "Create Accounts",
     onSubmit: async (f) => {
       const lines = f.lines.value.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
@@ -350,7 +360,7 @@ function addMany(main) {
         submit.textContent = `Creating ${i + 1} of ${parsed.length}…`;
         const password = generatePassword();
         try {
-          const { profile_id } = await manageAccount({ action: "create", full_name: person.full_name, email: person.email, role: f.role.value, password });
+          const { profile_id } = await manageAccount({ action: "create", full_name: person.full_name, email: person.email, role: f.role.value, password, send_email: f.send_email.checked });
           const { department, designation, market, manager } = person;
           await saveDetails(profile_id, { department: department || null, designation: designation || null, market: market || null, manager: manager || null });
           results.push({ ...person, password, ok: true });
@@ -413,9 +423,9 @@ function createLogin(p, main) {
     submitLabel: "Create Login",
     onSubmit: async (f) => {
       const password = f.password.value.trim();
-      await manageAccount({ action: "create", full_name: p.full_name, email: p.email, role: p.role, password });
+      const { emailed } = await manageAccount({ action: "create", full_name: p.full_name, email: p.email, role: p.role, password, send_email: f.send_email.checked });
       await load(main);
-      showCredentials(p, password);
+      showCredentials(p, password, emailed);
     },
   });
   wireGenerate(form);
@@ -429,9 +439,9 @@ function resetPassword(p, main) {
     submitLabel: "Reset Password",
     onSubmit: async (f) => {
       const password = f.password.value.trim();
-      await manageAccount({ action: "reset_password", profile_id: p.id, password });
+      const { emailed } = await manageAccount({ action: "reset_password", profile_id: p.id, password, send_email: f.send_email.checked });
       await load(main);
-      showCredentials(p, password);
+      showCredentials(p, password, emailed);
     },
   });
   wireGenerate(form);
