@@ -182,7 +182,7 @@ const gatesPassed = (e) =>
 function stepState(step, e) {
   const p = e.progressByStep[step.id];
   const latestUpload = e.uploadsByStep[step.id]?.[0];
-  if (p?.status === "completed") return { key: "done", label: "Completed" };
+  if (p?.status === "completed") return { key: "done", label: step.step_type === "resource" ? "Reviewed" : "Completed" };
 
   const status = e.program.status;
   if (status === "scheduled") return { key: "locked", label: "Opens When The Program Starts" };
@@ -197,7 +197,7 @@ function stepState(step, e) {
   if (step.step_type === "upload" && latestUpload?.status === "pending") return { key: "review", label: "Waiting For Trainer Review" };
   if (step.step_type === "upload" && latestUpload?.status === "rejected") return { key: "redo", label: "Returned: Please Upload Again" };
   if (p?.status === "in_progress") return { key: "open", label: "In Progress" };
-  return { key: "open", label: "Ready To Start" };
+  return { key: "open", label: step.step_type === "resource" ? "Extra · Not Counted" : "Ready To Start" };
 }
 
 // "Due in 3 days" / "Overdue by 2 days" / "Due 30 Nov 2026"
@@ -518,12 +518,21 @@ async function programPage(main, ctx, programId) {
     const btn = ev.target.closest("[data-act]");
     if (!btn) return;
     const step = e.steps.find((s) => s.id === btn.dataset.step);
-    if (mode.preview && btn.dataset.act !== "view-file" && btn.dataset.act !== "join") return previewOnly();
-    if (btn.dataset.act === "join" && mode.preview) return;
+    if (mode.preview && !["view-file", "join", "open-doc"].includes(btn.dataset.act)) return previewOnly();
+    if (["join", "open-doc"].includes(btn.dataset.act) && mode.preview) return;
     if (btn.dataset.act === "survey-done") surveyDone(step, reload);
     if (btn.dataset.act === "upload") uploadFile(step, e, reload);
     if (btn.dataset.act === "view-file") viewFile(btn.dataset.path);
     if (btn.dataset.act === "join") sb.rpc("start_step", { p_step: step.id }).then(() => {});
+    // Documents are extras: the learner confirms they've read them (not counted toward completion)
+    if (btn.dataset.act === "doc-done") {
+      btn.disabled = true;
+      sb.rpc("complete_step", { p_step: step.id }).then(({ error }) => {
+        if (error) { btn.disabled = false; return toast(error.message, "err"); }
+        toast("Marked as reviewed. Thank you!");
+        reload();
+      });
+    }
   });
 }
 
@@ -555,7 +564,7 @@ function learnerStep(s, i, e) {
 
   let action = "";
   if (st.key === "done" && s.step_type === "assessment") action = `<a class="btn" href="${base}/assessment/${s.id}">View Results</a>`;
-  if (open || (st.key === "done" && s.step_type === "module")) {
+  if (open || (st.key === "done" && ["module", "resource"].includes(s.step_type))) {
     if (s.step_type === "module") {
       action = url ? `<a class="btn ${st.key === "done" ? "" : "primary"}" href="${base}/module/${s.id}">${st.key === "done" ? "Review Module" : p?.status === "in_progress" ? "Continue Module" : "Start Module"}</a>`
         : '<span class="muted">The module link isn\'t ready yet.</span>';
@@ -571,6 +580,7 @@ function learnerStep(s, i, e) {
       action = `${url ? `<a class="btn" href="${esc(url)}" target="_blank" rel="noopener">Open Survey</a>` : ""}
         <button class="btn primary" data-act="survey-done" data-step="${s.id}">I've Completed It</button>`;
     }
+    if (s.step_type === "resource") action = url ? `<a class="btn ${st.key === "done" ? "" : "primary"}" href="${esc(url)}" target="_blank" rel="noopener" data-act="open-doc" data-step="${s.id}">${icons.resource} ${st.key === "done" ? "Open Again" : "Open Document"}</a>${st.key === "done" ? "" : `<button class="btn" data-act="doc-done" data-step="${s.id}">${icons.check} Mark As Reviewed</button>`}` : '<span class="muted">The link isn\'t ready yet.</span>';
     if (s.step_type === "upload") action = `<button class="btn primary" data-act="upload" data-step="${s.id}">${icons.upload} ${(s.max_files ?? 1) > 1 ? "Upload Files" : "Upload File"}</button>`;
   }
 

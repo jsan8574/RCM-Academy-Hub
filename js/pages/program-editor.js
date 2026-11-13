@@ -39,6 +39,7 @@ const LINK_HINT = {
   module: "The module's address on the team's GitHub, e.g. https://….github.io/module-1/",
   ilt_session: "The Microsoft Teams meeting link.",
   survey: "Optional: an external survey link (e.g. Microsoft Forms). Leave empty to build the survey here with Build.",
+  resource: "The SharePoint link to the document or folder (Share → Copy Link). Learners need SharePoint access to open it. It's an extra: learners click Mark As Reviewed, and it doesn't count toward completion.",
 };
 
 export async function renderProgramEditor(main, ctx) {
@@ -652,7 +653,7 @@ function stepCard(s, i, total) {
   const url = linkOf(s);
   const qCount = s.assessment_questions?.[0]?.count ?? 0;
   // A survey is either built here (questions) or an external link
-  const needsLink = ["module", "ilt_session"].includes(s.step_type) || (s.step_type === "survey" && !qCount);
+  const needsLink = ["module", "ilt_session", "resource"].includes(s.step_type) || (s.step_type === "survey" && !qCount);
   const meta = [
     s.step_type === "ilt_session" && s.session_start &&
       `Session ${esc(fmtDateTime(s.session_start))}${s.session_end ? ` – ${esc(new Date(s.session_end).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }))}` : ""}`,
@@ -671,7 +672,7 @@ function stepCard(s, i, total) {
     s.step_type === "assessment" && s.max_attempts && `<span class="pill">${s.max_attempts} Attempt${s.max_attempts === 1 ? "" : "s"}</span>`,
     s.step_type === "upload" && (s.max_files ?? 1) > 1 && `<span class="pill">Up To ${s.max_files} Files</span>`,
     s.step_type === "upload" && '<span class="pill teal">Checked By Trainer</span>',
-    !s.is_required && '<span class="pill">Optional</span>',
+    s.step_type === "resource" ? '<span class="pill">Extra (Not Counted)</span>' : !s.is_required && '<span class="pill">Optional</span>',
   ].filter(Boolean);
 
   return `
@@ -715,7 +716,7 @@ function editStep(program, step, steps, reload) {
       <label class="field">Instructions For Learners <span class="hint">(Optional)</span>
         <textarea class="input prose short" name="description">${esc(s.description ?? "")}</textarea>
       </label>
-      <label class="field" data-for="module ilt_session survey">Link
+      <label class="field" data-for="module ilt_session survey resource">Link
         <input class="input" name="url" type="url" value="${esc(linkOf(s))}" placeholder="https://">
         <span class="hint" data-link-hint></span>
       </label>
@@ -732,7 +733,7 @@ function editStep(program, step, steps, reload) {
           <input class="input" type="datetime-local" name="unlock_at" value="${toLocalInput(s.unlock_at)}">
           <span class="hint" data-unlock-hint></span>
         </label>
-        <label class="field">Due <span class="hint">(Optional)</span>
+        <label class="field" data-for="module ilt_session assessment survey upload">Due <span class="hint">(Optional)</span>
           <input class="input" type="datetime-local" name="due_at" value="${toLocalInput(s.due_at)}">
         </label>
       </div>
@@ -743,7 +744,7 @@ function editStep(program, step, steps, reload) {
         <span class="hint">How many files a learner can send for this step (PDF, PNG or JPG, up to 5 MB each). A trainer approves or returns them together.</span>
       </label>
       <div class="notice info" data-for="assessment survey">After saving, click <b>Build</b> on this step to add sections, questions, the timer and other settings.</div>
-      <label class="check"><input type="checkbox" name="is_required" ${s.is_required ? "checked" : ""}> Counts Toward Completion</label>`,
+      <label class="check" data-for="module ilt_session assessment survey upload"><input type="checkbox" name="is_required" ${s.is_required ? "checked" : ""}> Counts Toward Completion</label>`,
     submitLabel: step ? "Save Step" : "Add Step",
     onSubmit: async (f) => {
       const type = f.step_type.value;
@@ -770,9 +771,9 @@ function editStep(program, step, steps, reload) {
         session_start: sessionStart,
         session_end: sessionEnd,
         unlock_at: unlockAt,
-        due_at: fromLocalInput(f.due_at.value),
+        due_at: type === "resource" ? null : fromLocalInput(f.due_at.value),
         completion_text: type === "module" ? f.completion_text.value.trim() || null : null,
-        is_required: f.is_required.checked,
+        is_required: type === "resource" ? false : f.is_required.checked,
         max_files: type === "upload" ? Number(f.max_files.value) || 1 : 1,
       };
 
@@ -787,7 +788,7 @@ function editStep(program, step, steps, reload) {
         stepId = data.id;
       }
 
-      const needsLink = ["module", "ilt_session", "survey"].includes(type);
+      const needsLink = ["module", "ilt_session", "survey", "resource"].includes(type);
       if (needsLink && url) {
         const { error } = await sb.from("step_links").upsert({ step_id: stepId, url });
         if (error) throw error;
