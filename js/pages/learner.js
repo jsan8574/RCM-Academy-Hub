@@ -10,6 +10,7 @@
 import { sb } from "../supabase.js";
 import { esc, toast, openModal, icons, stepIcon, fmtDate, fmtDateTime, PROGRAM_TYPE, STEP_TYPE, LIKERT } from "../ui.js";
 import { newMessage } from "./messages.js";
+import { startSecureTest, enterFullScreen, secureRulesHtml, MAX_EXITS } from "../secure-test.js";
 
 const UPLOAD_BUCKET = "learner-uploads";
 const VIDEO_BUCKET = "welcome-videos";
@@ -25,10 +26,10 @@ const fileTypeOf = (file) =>
 const DAY = 86400000;
 
 // Who the pages are showing, and where their links point
-let mode = { preview: false, base: "#/home", learnerId: null, name: "" };
+let mode = { preview: false, base: "#/home", learnerId: null, name: "", email: "" };
 
 export async function renderLearning(main, ctx) {
-  mode = { preview: false, base: "#/home", learnerId: ctx.me.id, name: ctx.me.full_name };
+  mode = { preview: false, base: "#/home", learnerId: ctx.me.id, name: ctx.me.full_name, email: ctx.me.email ?? "" };
   return route(main, ctx, ctx.params);
 }
 
@@ -50,7 +51,7 @@ export async function renderPreview(main, ctx) {
     .sort((a, b) => a.full_name.localeCompare(b.full_name));
   const viewed = learners.find((l) => l.id === as);
   const learnerId = viewed ? as : null;
-  mode = { preview: true, base: `#/preview/${learnerId ?? "new"}`, learnerId, name: viewed?.full_name ?? "Learner" };
+  mode = { preview: true, base: `#/preview/${learnerId ?? "new"}`, learnerId, name: viewed?.full_name ?? "Learner", email: "Preview" };
 
   main.innerHTML = `
     <div class="preview-bar">
@@ -934,13 +935,13 @@ function questionField(q, n, { order = null, readonly = false } = {}) {
       <div class="scale-ends muted small"><span>Not at all likely</span><span>Extremely likely</span></div>`;
   }
   return `
-    <fieldset class="card question" data-qid="${q.id}">
-      <legend><span class="q-no">${n}</span> <span>${esc(q.question)}${q.required ? ' <span class="req" title="Required">*</span>' : ""}</span>
-        ${q.points != null && q.points !== 0 && ["single", "multi", "truefalse", "short"].includes(q.qtype) ? `<span class="q-pts">${Number(q.points)} pt${Number(q.points) === 1 ? "" : "s"}</span>` : ""}</legend>
+    <div class="card question" role="group" aria-labelledby="qt-${q.id}" data-qid="${q.id}">
+      <div class="q-title" id="qt-${q.id}"><span class="q-no">${n}</span> <span>${esc(q.question)}${q.required ? ' <span class="req" title="Required">*</span>' : ""}</span>
+        ${q.points != null && q.points !== 0 && ["single", "multi", "truefalse", "short"].includes(q.qtype) ? `<span class="q-pts">${Number(q.points)} pt${Number(q.points) === 1 ? "" : "s"}</span>` : ""}</div>
       ${q.description ? `<p class="muted small q-hint">${esc(q.description)}</p>` : ""}
       ${body}
       <div class="q-error" hidden>This question is required.</div>
-    </fieldset>`;
+    </div>`;
 }
 
 function readAnswers(form, questions) {
@@ -1049,7 +1050,9 @@ async function assessmentPage(main, ctx, programId, stepId) {
         ${step.passing_score != null ? `<span class="chip">${icons.flag} Pass Mark ${Number(step.passing_score)}%</span>` : ""}
         <span class="chip">${icons.route} ${step.max_attempts ? `${left} Of ${step.max_attempts} Attempt${step.max_attempts === 1 ? "" : "s"} Left` : "Unlimited Attempts"}</span>
         ${step.close_at ? `<span class="chip">${icons.calendar} Closes ${esc(fmtDateTime(step.close_at))}</span>` : ""}
+        ${step.secure_mode ? `<span class="chip">${icons.flag} Secure Test</span>` : ""}
       </div>
+      ${step.secure_mode && !status ? `<div class="notice info" style="margin:12px 0"><b>Secure Test:</b> stay on the test until you submit. Leaving it ${MAX_EXITS} times submits your answers automatically.</div>` : ""}
       ${status ?? `
         ${step.time_limit_minutes ? `<p class="muted">The timer starts when you click ${open ? "Continue" : "Start"}. Your answers are submitted automatically when time runs out.</p>` : ""}
         <button class="btn primary" data-start>${mode.preview ? "Try It (Preview)" : open ? "Continue Assessment →" : "Start Assessment →"}</button>`}
@@ -1062,14 +1065,28 @@ async function assessmentPage(main, ctx, programId, stepId) {
           <td><span class="pill ${a.passed ? "good" : ""}">${a.status === "expired" ? "Time Ran Out" : a.passed ? "Passed" : "Not Passed"}</span></td></tr>`).join("")}</tbody>
       </table></div>` : ""}`;
 
-  main.querySelector("[data-start]")?.addEventListener("click", async (ev) => {
+  const begin = async (btn) => {
     if (mode.preview) {
       return takeQuiz(main, step, sections, questions, { attempt_id: null, deadline_at: null, order: null }, back);
     }
-    ev.currentTarget.disabled = true;
+    btn.disabled = true;
     const { data, error } = await sb.rpc("start_assessment", { p_step: stepId });
-    if (error) { toast(error.message, "err"); ev.currentTarget.disabled = false; return; }
+    if (error) { btn.disabled = false; throw new Error(error.message); }
     takeQuiz(main, step, sections, questions, data, back);
+  };
+  main.querySelector("[data-start]")?.addEventListener("click", async (ev) => {
+    const btn = ev.currentTarget;
+    if (!step.secure_mode) return begin(btn).catch((err) => toast(err.message, "err"));
+    openModal({
+      title: "Secure Test",
+      intro: "Please read before you start.",
+      body: secureRulesHtml(),
+      submitLabel: open ? "Continue Test" : "Start Test",
+      onSubmit: async () => {
+        enterFullScreen();          // straight from the click, as browsers require
+        await begin(btn);
+      },
+    });
   });
 }
 
@@ -1109,7 +1126,8 @@ function takeQuiz(main, step, sections, questions, attempt, back) {
 
   let timer = null;
   let sending = false;
-  const stop = () => clearInterval(timer);
+  let stopSecure = () => {};
+  const stop = () => { clearInterval(timer); stopSecure(); };
   window.addEventListener("hashchange", stop, { once: true });
 
   const submit = async (auto) => {
@@ -1126,8 +1144,16 @@ function takeQuiz(main, step, sections, questions, attempt, back) {
     sending = false;
     if (error) { toast(error.message, "err"); return; }
     if (storeKey) try { localStorage.removeItem(storeKey); } catch { /* ignore */ }
+    stopSecure();
     showQuizResult(main, step, ordered, answers, data, back);
   };
+
+  if (step.secure_mode) {
+    stopSecure = startSecureTest({
+      attemptId: attempt.attempt_id, name: mode.name, email: mode.email, resumed: !!attempt.resumed,
+      onAutoSubmit: () => { toast(`You left the test ${MAX_EXITS} times, so your answers were submitted.`, "err"); submit(true); },
+    });
+  }
 
   if (deadline) {
     const el = main.querySelector("[data-timer]");
@@ -1229,12 +1255,12 @@ async function surveyPage(main, ctx, programId, stepId) {
   if (blocked) { main.innerHTML = `${formHeader(back, step.title)}<div class="notice info">${blocked}</div>`; return; }
 
   const identity = {
-    choose: `<fieldset class="card identity">
-        <legend>Share Your Name? <span class="req">*</span></legend>
+    choose: `<div class="card identity" role="group" aria-labelledby="share-title">
+        <div class="identity-title" id="share-title">Share Your Name? <span class="req">*</span></div>
         <label class="id-opt"><input type="radio" name="share" value="yes"><span><b>Share My Name</b><span class="muted small">The Technical Training Team sees your name with your answers.</span></span></label>
         <label class="id-opt"><input type="radio" name="share" value="no"><span><b>Stay Anonymous</b><span class="muted small">The Technical Training Team sees your answers without your name.</span></span></label>
         <div class="q-error" hidden>Please choose one.</div>
-      </fieldset>`,
+      </div>`,
     anonymous: '<div class="notice info">This survey is anonymous. Your name isn\'t shared with your answers.</div>',
     named: '<div class="notice info">Your name is shared with the Technical Training Team along with your answers.</div>',
   }[step.identity_mode ?? "choose"];

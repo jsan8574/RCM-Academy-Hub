@@ -170,7 +170,7 @@ function duplicateProgram(program, me) {
           is_required: s.is_required, passing_score: s.passing_score, completion_text: s.completion_text,
           time_limit_minutes: s.time_limit_minutes, max_attempts: s.max_attempts, shuffle_questions: s.shuffle_questions,
           shuffle_options: s.shuffle_options, show_answers: s.show_answers, identity_mode: s.identity_mode, thank_you: s.thank_you,
-          max_files: s.max_files ?? 1,
+          max_files: s.max_files ?? 1, secure_mode: s.secure_mode ?? true,
         }).select("id").single();
         if (stepErr) throw stepErr;
         const url = linkOf(s);
@@ -579,10 +579,10 @@ async function journeyTab(area, program, reload) {
 
   area.innerHTML = `
     <div class="tab-head">
-      <p class="muted">The steps learners go through, in order. Each step opens on its “available from” date (or as soon as the program is live).</p>
+      <p class="muted">The steps learners go through, in order. Drag a step to move it. Each step opens on its “available from” date (or as soon as the program is live).</p>
       <button class="btn primary" data-add>${icons.plus} Add Step</button>
     </div>
-    ${steps.length ? `<ol class="steps">${steps.map((s, i) => stepCard(s, i, steps.length)).join("")}</ol>`
+    ${steps.length ? `<ol class="steps sortable">${steps.map((s, i) => stepCard(s, i, steps.length)).join("")}</ol>`
       : '<div class="empty"><div><strong>No Steps Yet</strong>Add modules, live sessions, assessments, surveys and uploads.</div></div>'}`;
 
   area.querySelector("[data-add]").addEventListener("click", () => editStep(program, null, steps, reload));
@@ -606,7 +606,47 @@ async function journeyTab(area, program, reload) {
       reload();
     }
   });
+  const list = area.querySelector(".steps");
+  if (list) makeSortable(list, steps, reload);
 }
+
+// Drag a step card up or down to reorder; the arrows still work too
+function makeSortable(list, steps, reload) {
+  let dragging = null;
+  const before = steps.map((s) => s.id);
+  list.addEventListener("dragstart", (e) => {
+    dragging = e.target.closest(".step[data-id]");
+    if (!dragging) return;
+    dragging.classList.add("dragging");
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", dragging.dataset.id);
+  });
+  list.addEventListener("dragover", (e) => {
+    if (!dragging) return;
+    e.preventDefault();
+    // Put the dragged card before the first card whose middle is below the pointer
+    const next = [...list.querySelectorAll(".step[data-id]:not(.dragging)")]
+      .find((el) => { const r = el.getBoundingClientRect(); return e.clientY < r.top + r.height / 2; });
+    if (next) { if (next !== dragging.nextElementSibling) list.insertBefore(dragging, next); }
+    else if (dragging !== list.lastElementChild) list.append(dragging);
+  });
+  list.addEventListener("drop", (e) => e.preventDefault());
+  list.addEventListener("dragend", async () => {
+    if (!dragging) return;
+    dragging.classList.remove("dragging");
+    dragging = null;
+    const order = [...list.querySelectorAll(".step[data-id]")].map((el) => el.dataset.id);
+    if (order.join() === before.join()) return;
+    list.querySelectorAll(".step-num span").forEach((el, n) => { el.textContent = n + 1; });
+    list.classList.add("saving");
+    const results = await Promise.all(order.map((sid, n) => sb.from("program_steps").update({ position: n + 1 }).eq("id", sid)));
+    const failed = results.find((r) => r.error);
+    toast(failed ? `Couldn't save the new order: ${failed.error.message}` : "New order saved.", failed ? "err" : undefined);
+    reload();
+  });
+}
+
+const GRIP = '<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg>';
 
 function stepCard(s, i, total) {
   const url = linkOf(s);
@@ -635,7 +675,8 @@ function stepCard(s, i, total) {
   ].filter(Boolean);
 
   return `
-    <li class="step">
+    <li class="step" draggable="true" data-id="${s.id}">
+      <div class="step-grip" title="Drag to move" aria-hidden="true">${GRIP}</div>
       <div class="step-num"><span>${i + 1}</span></div>
       <div class="step-icon">${stepIcon(s.step_type)}</div>
       <div class="step-body">

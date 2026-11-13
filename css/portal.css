@@ -395,7 +395,7 @@ body.no-scroll { overflow: hidden; }
 
 .assessment { max-width: 760px; }
 .question { border: 1px solid var(--line); margin: 0; display: grid; gap: 8px; }
-.question legend { float: left; width: 100%; font-weight: 600; font-size: 15px; margin-bottom: 6px; display: flex; gap: 10px; }
+.question .q-title { font-weight: 600; font-size: 15px; margin-bottom: 6px; display: flex; gap: 10px; }
 .q-no { flex: none; display: grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: var(--navy-800); color: #fff; font-size: 12px; }
 .choice { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px; cursor: pointer; }
 .choice:hover { border-color: var(--primary); background: var(--primary-50); }
@@ -671,7 +671,7 @@ body.no-scroll { overflow: hidden; }
 .form-section { margin-top: 8px; }
 .form-section h2 { font-size: 17px; color: var(--navy-800); }
 .form-section p { margin: 4px 0 0; }
-.question legend { align-items: flex-start; }
+.question .q-title { align-items: flex-start; }
 .question .req, .identity .req { color: var(--crit); font-weight: 700; }
 .q-pts { margin-left: auto; font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 99px; background: var(--primary-50); color: var(--primary-600); white-space: nowrap; }
 .q-hint { margin: -2px 0 2px; }
@@ -701,7 +701,7 @@ body.no-scroll { overflow: hidden; }
 .review-head { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .review-head .pill { margin-left: auto; }
 .identity { border: 1px solid var(--line); display: grid; gap: 8px; }
-.identity legend { float: left; width: 100%; font-weight: 600; font-size: 15px; margin-bottom: 4px; }
+.identity .identity-title { font-weight: 600; font-size: 15px; margin-bottom: 4px; }
 .id-opt { display: flex; gap: 12px; align-items: flex-start; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; cursor: pointer; }
 .id-opt:has(input:checked) { border-color: var(--primary); background: var(--primary-50); }
 .id-opt input { width: 18px; height: 18px; margin-top: 2px; accent-color: var(--primary); }
@@ -942,3 +942,29 @@ button.prog-bar { border: 0; background: none; font: inherit; color: inherit; te
 .filter-chips { flex: 1 1 0; }
 .filter-label { flex: none; align-self: flex-start; height: 30px; }
 @media (max-width: 860px) { .filter-label { display: none; } }
+
+/* Secure Test Mode (js/secure-test.js) */
+body.secure-test-on main { user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+body.secure-test-on main input, body.secure-test-on main textarea { user-select: text; -webkit-user-select: text; }
+.secure-watermark { position: fixed; inset: 0; z-index: 40; pointer-events: none; background-repeat: repeat; }
+.secure-cover {
+  position: fixed; inset: 0; z-index: 55; display: grid; place-items: center; padding: 16px;
+  background: rgba(14, 32, 56, .55); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
+}
+.secure-cover-card { background: #fff; border-radius: 16px; padding: 26px 24px; max-width: 440px; text-align: center; box-shadow: var(--shadow-lg); }
+.secure-cover-card h2 { margin: 0 0 8px; }
+.secure-cover-card p { margin: 0 0 18px; color: var(--ink-2); }
+.secure-black { position: fixed; inset: 0; z-index: 58; background: #000; }
+.secure-rules { margin: 4px 0 0; padding-left: 20px; display: grid; gap: 8px; }
+@media print {
+  body.secure-test-on * { visibility: hidden !important; }
+}
+
+/* Learning Journey: drag steps to reorder (program-editor.js) */
+.steps.sortable .step { grid-template-columns: 18px 28px 40px minmax(0, 1fr) auto; cursor: grab; }
+.steps.sortable .step:active { cursor: grabbing; }
+.steps.sortable .step.dragging { opacity: .45; border-style: dashed; box-shadow: none; }
+.steps.sortable.saving { opacity: .7; pointer-events: none; }
+.step-grip { color: var(--ink-3); display: grid; place-items: center; }
+.step-grip svg { width: 18px; height: 18px; }
+@media (max-width: 860px) { .steps.sortable .step { grid-template-columns: 28px minmax(0, 1fr); } .step-grip { display: none; } }

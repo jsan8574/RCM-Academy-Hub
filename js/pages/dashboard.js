@@ -31,20 +31,21 @@ async function all(build) {
 }
 
 async function loadData() {
-  const [programs, enrollments, progress, steps, stepProgress, attempts, uploads, threads, exclusions, responses, scaleQs] = await Promise.all([
+  const [programs, enrollments, progress, steps, stepProgress, attempts, uploads, threads, exclusions, responses, scaleQs, testEvents] = await Promise.all([
     all(() => sb.from("programs").select("id, title, program_type, status, start_date, due_date, owner:profiles!programs_owner_id_fkey(full_name)").order("title")),
     all(() => sb.from("enrollments").select("id, program_id, learner_id, due_date_override, enrolled_at, learner:profiles(full_name, email, is_active, department, designation, market, manager)")),
     all(() => sb.from("v_enrollment_progress").select("*")),
     all(() => sb.from("program_steps").select("id, program_id, position, step_type, title, is_required, passing_score").order("position")),
     all(() => sb.from("step_progress").select("enrollment_id, step_id, status, score, started_at, completed_at")),
-    all(() => sb.from("assessment_attempts").select("enrollment_id, step_id, status, score, max_score, percent, passed, submitted_at")),
+    all(() => sb.from("assessment_attempts").select("id, enrollment_id, step_id, status, score, max_score, percent, passed, submitted_at, exit_count")),
     all(() => sb.from("uploads").select("enrollment_id, step_id, file_name, status, uploaded_at, reviewed_at, review_comment, reviewer:profiles!uploads_reviewed_by_fkey(full_name)")),
     all(() => sb.from("message_threads").select("id, program_id, status")),
     all(() => sb.from("enrollment_exclusions").select("enrollment_id, step_id")),
     all(() => sb.from("survey_responses").select("step_id, respondent_id, answers, submitted_at")),
     all(() => sb.from("assessment_questions").select("id, step_id, qtype").in("qtype", ["rating", "likert", "nps"])),
+    all(() => sb.from("assessment_events").select("attempt_id, kind, seconds_away, created_at").order("created_at")),
   ]);
-  return { programs, enrollments, progress, steps, stepProgress, attempts, uploads, threads, exclusions, responses, scaleQs };
+  return { programs, enrollments, progress, steps, stepProgress, attempts, uploads, threads, exclusions, responses, scaleQs, testEvents };
 }
 
 function periodStart(key) {
@@ -258,8 +259,21 @@ function compute(d) {
   const attemptRows = attempts.map((a) => {
     const e = enrollmentById[a.enrollment_id];
     return { learner: e.learner.full_name, email: e.learner.email, program: programById[e.program_id].title,
-      step: stepById[a.step_id]?.title ?? "", percent: Number(a.percent), passed: a.passed, submitted: a.submitted_at };
+      step: stepById[a.step_id]?.title ?? "", percent: Number(a.percent), passed: a.passed, submitted: a.submitted_at, exits: a.exit_count ?? 0 };
   }).sort((a, b) => new Date(b.submitted) - new Date(a.submitted));
+  // Secure Test Mode log for the attempts in view
+  const attemptById = Object.fromEntries(attempts.map((a) => [a.id, a]));
+  const EVENT = {
+    started: "Started The Test", resumed: "Reopened The Test", left_page: "Switched Away From The Test",
+    fullscreen_exit: "Left Full Screen", returned: "Came Back", print_screen: "Pressed Print Screen",
+    copy_attempt: "Tried To Copy", paste_attempt: "Tried To Paste", auto_submitted: "Submitted Automatically (Too Many Exits)",
+  };
+  const activityRows = (d.testEvents ?? []).filter((ev) => attemptById[ev.attempt_id]).map((ev) => {
+    const a = attemptById[ev.attempt_id];
+    const e = enrollmentById[a.enrollment_id];
+    return { learner: e.learner.full_name, email: e.learner.email, program: programById[e.program_id].title,
+      step: stepById[a.step_id]?.title ?? "", event: EVENT[ev.kind] ?? ev.kind, seconds: ev.seconds_away, at: ev.created_at };
+  });
   const uploadRows = uploads.map((u) => {
     const e = enrollmentById[u.enrollment_id];
     return { learner: e.learner.full_name, email: e.learner.email, program: programById[e.program_id].title,
@@ -267,7 +281,7 @@ function compute(d) {
       uploaded: u.uploaded_at, reviewedBy: u.reviewer?.full_name ?? "", reviewed: u.reviewed_at, comment: u.review_comment ?? "" };
   });
 
-  return { kpis, feedback, surveyRows, trend, programRows, groupRows, learners, stepRows, attemptRows, uploadRows, start, statusMix, attention, summary };
+  return { kpis, feedback, surveyRows, trend, programRows, groupRows, learners, stepRows, attemptRows, activityRows, uploadRows, start, statusMix, attention, summary };
 }
 
 // Count completions per day / week / month, depending on the period
@@ -789,15 +803,20 @@ async function exportExcel(v, data, me) {
 
   sheet("Assessment Attempts", v.attemptRows.length ? v.attemptRows.map((a) => ({
     Learner: a.learner, Email: a.email, Program: a.program, Assessment: a.step, "Score %": a.percent,
-    Result: a.passed ? "Passed" : "Not Passed", Submitted: xDate(a.submitted),
-  })) : [["No assessment attempts yet."]], [26, 32, 32, 32, 9, 12, 18]);
+    Result: a.passed ? "Passed" : "Not Passed", Submitted: xDate(a.submitted), "Times Left Test": a.exits,
+  })) : [["No assessment attempts yet."]], [26, 32, 32, 32, 9, 12, 18, 15]);
+
+  sheet("Test Activity", v.activityRows.length ? v.activityRows.map((r) => ({
+    Learner: r.learner, Email: r.email, Program: r.program, Assessment: r.step, Time: xDate(r.at), Event: r.event,
+    "Seconds Away": r.seconds ?? "",
+  })) : [["No test activity recorded."]], [26, 32, 32, 32, 18, 40, 13]);
 
   sheet("Uploads", v.uploadRows.length ? v.uploadRows.map((u) => ({
     Learner: u.learner, Email: u.email, Program: u.program, Step: u.step, File: u.file, Status: u.status,
     Uploaded: xDate(u.uploaded), "Reviewed By": u.reviewedBy, Reviewed: xDate(u.reviewed), Comment: u.comment,
   })) : [["No uploads yet."]], [26, 32, 32, 30, 30, 18, 18, 20, 18, 40]);
 
-  X.writeFile(wb, `L and D Learning Report ${today()}.xlsx`);
+  X.writeFile(wb, `RCM Academy Hub Learning Report ${today()}.xlsx`);
   toast("Excel file downloaded.");
 }
 
@@ -999,6 +1018,6 @@ async function exportPdf(v, data, me) {
     doc.text(`Page ${i} of ${pages}`, W - M, H - 20, { align: "right" });
   }
 
-  doc.save(`${safeName(`L and D Learning Report - ${scope} - ${today()}`)}.pdf`);
+  doc.save(`${safeName(`RCM Academy Hub Learning Report - ${scope} - ${today()}`)}.pdf`);
   toast("PDF report downloaded.");
 }

@@ -49,6 +49,7 @@ export async function renderFormBuilder(main, program, stepId) {
       time_limit_minutes: step.time_limit_minutes ?? "", max_attempts: step.max_attempts ?? "",
       passing_score: step.passing_score ?? "", shuffle_questions: step.shuffle_questions, shuffle_options: step.shuffle_options,
       show_answers: step.show_answers, identity_mode: step.identity_mode ?? "choose", thank_you: step.thank_you ?? "",
+      secure_mode: step.secure_mode ?? true,
     },
     sections: (sections ?? []).map((s) => ({ id: s.id, title: s.title ?? "", description: s.description ?? "", questions: [] })),
   };
@@ -115,6 +116,8 @@ export async function renderFormBuilder(main, program, stepId) {
               <label class="check"><input type="checkbox" data-set="shuffle_questions" ${s.shuffle_questions ? "checked" : ""}> Shuffle Questions <span class="hint">(within each section)</span></label>
               <label class="check"><input type="checkbox" data-set="shuffle_options" ${s.shuffle_options ? "checked" : ""}> Shuffle Answer Choices</label>
               <label class="check"><input type="checkbox" data-set="show_answers" ${s.show_answers ? "checked" : ""}> Show Correct Answers After Submitting</label>
+              <label class="check"><input type="checkbox" data-set="secure_mode" ${s.secure_mode ? "checked" : ""}> Secure Test Mode
+                <span class="hint">(full screen, no copying, blurs when learners leave, submits automatically after 3 exits, and records every exit in Results)</span></label>
             </div>` : `
             <label class="field">Learner Names
               <select class="select" data-set="identity_mode">
@@ -333,6 +336,7 @@ export async function renderFormBuilder(main, program, stepId) {
           max_attempts: s.max_attempts === "" ? null : Number(s.max_attempts),
           passing_score: s.passing_score === "" ? null : Number(s.passing_score),
           shuffle_questions: !!s.shuffle_questions, shuffle_options: !!s.shuffle_options, show_answers: !!s.show_answers,
+          secure_mode: !!s.secure_mode,
         } : { identity_mode: s.identity_mode, thank_you: s.thank_you.trim() || null }),
       }).eq("id", step.id);
       if (stepErr) throw stepErr;

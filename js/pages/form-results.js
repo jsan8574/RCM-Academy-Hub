@@ -33,6 +33,14 @@ export async function renderFormResults(main, program, stepId, me) {
 
 const minutes = (a) => (a.started_at && a.submitted_at ? Math.max(0, Math.round((new Date(a.submitted_at) - new Date(a.started_at)) / 60000)) : null);
 const STATUS = { submitted: "Submitted", manual: "Entered By Admin", expired: "Time Ran Out", in_progress: "In Progress" };
+// Secure Test Mode events (assessment_events)
+const EVENT = {
+  started: "Started The Test", resumed: "Reopened The Test", left_page: "Switched Away From The Test",
+  fullscreen_exit: "Left Full Screen", returned: "Came Back", print_screen: "Pressed Print Screen",
+  copy_attempt: "Tried To Copy", paste_attempt: "Tried To Paste", auto_submitted: "Submitted Automatically (Too Many Exits)",
+};
+const eventText = (ev) => `${EVENT[ev.kind] ?? ev.kind}${ev.kind === "returned" && ev.seconds_away != null ? ` (away ${ev.seconds_away < 60 ? `${ev.seconds_away} sec` : `${Math.round(ev.seconds_away / 60)} min`})` : ""}`;
+const exitsPill = (n) => (n ? `<span class="pill crit">${n} Exit${n === 1 ? "" : "s"}</span>` : "");
 
 // =====================================================================
 // Assessment
@@ -44,6 +52,13 @@ async function assessmentResults({ main, program, step, questions, enrolled, me,
     : { data: [] };
   const isAdmin = me.role === "admin";
   const done = (attempts ?? []).filter((a) => a.status !== "in_progress" && a.percent != null);
+
+  // Secure Test Mode log for this assessment
+  const { data: events } = (attempts ?? []).length
+    ? await sb.from("assessment_events").select("attempt_id, kind, seconds_away, created_at, attempt:assessment_attempts!inner(step_id)")
+      .eq("attempt.step_id", step.id).order("created_at")
+    : { data: [] };
+  const eventsOf = (attemptId) => (events ?? []).filter((ev) => ev.attempt_id === attemptId);
 
   const rows = enrolled.map((e) => {
     const mine = (attempts ?? []).filter((a) => a.enrollment_id === e.id);
@@ -86,7 +101,8 @@ async function assessmentResults({ main, program, step, questions, enrolled, me,
             <td class="name"><strong>${esc(r.e.learner.full_name)}</strong><span>${esc(r.e.learner.email)}</span></td>
             <td>${r.best == null ? '<span class="muted">–</span>' : `<div class="meter"><i style="width:${r.best}%"></i></div> ${r.best}%`}</td>
             <td><span class="pill ${PILL[r.result]}">${r.result}</span></td>
-            <td>${r.used}${step.max_attempts ? ` / ${step.max_attempts}` : ""}${r.mine.some((a) => a.status === "manual") ? ' <span class="pill">Manual</span>' : ""}</td>
+            <td>${r.used}${step.max_attempts ? ` / ${step.max_attempts}` : ""}${r.mine.some((a) => a.status === "manual") ? ' <span class="pill">Manual</span>' : ""}
+              ${exitsPill(r.mine.reduce((n, a) => n + (a.exit_count ?? 0), 0))}</td>
             <td>${esc(fmtDateTime(r.last))}</td>
             <td class="actions">
               ${r.mine.length ? `<button class="btn sm" data-attempts="${r.e.id}">Attempts</button>` : ""}
@@ -118,7 +134,7 @@ async function assessmentResults({ main, program, step, questions, enrolled, me,
       title: `Attempts: ${r.e.learner.full_name}`,
       wide: true,
       body: `<div class="table-wrap"><table class="data">
-        <thead><tr><th>#</th><th>Started</th><th>Time</th><th>Score</th><th>Status</th><th></th></tr></thead>
+        <thead><tr><th>#</th><th>Started</th><th>Time</th><th>Score</th><th>Status</th><th>Test Activity</th><th></th></tr></thead>
         <tbody>${r.mine.map((a, i) => `
           <tr>
             <td>${i + 1}</td><td>${esc(fmtDateTime(a.started_at ?? a.submitted_at))}</td>
@@ -127,16 +143,36 @@ async function assessmentResults({ main, program, step, questions, enrolled, me,
               ${a.original_percent != null ? `<div class="muted small">Was ${Number(a.original_percent)}%</div>` : ""}
               ${a.change_reason ? `<div class="muted small">${esc(a.changer?.full_name ?? "Admin")}: “${esc(a.change_reason)}”</div>` : ""}</td>
             <td><span class="pill ${a.passed ? "good" : a.status === "in_progress" ? "prog" : ""}">${STATUS[a.status]}${a.passed ? " · Passed" : ""}</span></td>
+            <td>${exitsPill(a.exit_count) || (eventsOf(a.id).length ? '<span class="muted small">No Exits</span>' : '<span class="muted">–</span>')}
+              ${eventsOf(a.id).length ? `<button type="button" class="btn sm" data-activity="${a.id}">View</button>` : ""}</td>
             <td class="actions">${isAdmin ? `<button type="button" class="btn sm" data-change="${a.id}">Change Score</button>` : ""}</td>
           </tr>`).join("")}</tbody></table></div>`,
       submitLabel: "Close",
       cancelLabel: "",
     });
     form.querySelector("tbody").addEventListener("click", (ev) => {
+      const act = ev.target.closest("[data-activity]");
+      if (act) return showActivity(r, r.mine.findIndex((a) => a.id === act.dataset.activity));
       const b = ev.target.closest("[data-change]");
       if (!b) return;
       form.closest(".modal-backdrop").remove();
       changeScore(r, r.mine.find((a) => a.id === b.dataset.change));
+    });
+  }
+
+  function showActivity(r, i) {
+    const a = r.mine[i];
+    openModal({
+      title: `Test Activity: ${r.e.learner.full_name}`,
+      intro: `Attempt ${i + 1}${a.exit_count ? ` · left the test ${a.exit_count} time${a.exit_count === 1 ? "" : "s"}` : " · never left the test"}`,
+      body: `<div class="table-wrap"><table class="data">
+        <thead><tr><th>Time</th><th>What Happened</th></tr></thead>
+        <tbody>${eventsOf(a.id).map((ev) => `<tr>
+          <td>${esc(fmtDateTime(ev.created_at))}</td>
+          <td>${["left_page", "fullscreen_exit", "print_screen", "auto_submitted"].includes(ev.kind) ? `<b>${esc(eventText(ev))}</b>` : esc(eventText(ev))}</td>
+        </tr>`).join("")}</tbody></table></div>`,
+      submitLabel: "Close",
+      cancelLabel: "",
     });
   }
 
@@ -183,9 +219,16 @@ async function assessmentResults({ main, program, step, questions, enrolled, me,
         Learner: who[a.enrollment_id]?.full_name, Email: who[a.enrollment_id]?.email, Status: STATUS[a.status],
         Started: a.started_at ? new Date(a.started_at) : "", Submitted: a.submitted_at ? new Date(a.submitted_at) : "",
         "Minutes Taken": minutes(a) ?? "", Score: a.score ?? "", "Out Of": a.max_score ?? "", "Score %": a.percent ?? "",
-        Passed: a.passed == null ? "" : a.passed ? "Yes" : "No", "Original Score %": a.original_percent ?? "",
+        Passed: a.passed == null ? "" : a.passed ? "Yes" : "No", "Times Left Test": a.exit_count ?? 0, "Original Score %": a.original_percent ?? "",
         "Changed By": a.changer?.full_name ?? "", Reason: a.change_reason ?? "",
-      })) : [["No attempts yet."]], [26, 32, 16, 18, 18, 13, 8, 8, 9, 8, 16, 20, 30]);
+      })) : [["No attempts yet."]], [26, 32, 16, 18, 18, 13, 8, 8, 9, 8, 15, 16, 20, 30]);
+      const attemptNo = Object.fromEntries(rows.flatMap((r) => r.mine.map((a, i) => [a.id, i + 1])));
+      const enrollmentOf = Object.fromEntries((attempts ?? []).map((a) => [a.id, a.enrollment_id]));
+      add("Test Activity", (events ?? []).length ? events.map((ev) => ({
+        Learner: who[enrollmentOf[ev.attempt_id]]?.full_name ?? "", Email: who[enrollmentOf[ev.attempt_id]]?.email ?? "",
+        Attempt: attemptNo[ev.attempt_id] ?? "", Time: new Date(ev.created_at), Event: EVENT[ev.kind] ?? ev.kind,
+        "Seconds Away": ev.seconds_away ?? "",
+      })) : [["No test activity recorded."]], [26, 32, 9, 20, 40, 13]);
       add("Questions", qStats.map((s, i) => ({
         "#": i + 1, Question: s.q.question, Type: QTYPE[s.q.qtype]?.label, Points: Number(s.q.points),
         "Answered Correctly %": s.rate ?? "", "Times Answered": s.seen,
