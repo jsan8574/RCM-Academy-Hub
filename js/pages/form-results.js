@@ -50,6 +50,10 @@ async function assessmentResults({ main, program, step, questions, enrolled, me,
   const { data: attempts } = ids.length
     ? await sb.from("assessment_attempts").select("*, changer:profiles!assessment_attempts_changed_by_fkey(full_name)").eq("step_id", step.id).in("enrollment_id", ids).order("started_at")
     : { data: [] };
+  const { data: progress } = ids.length && step.max_attempts
+    ? await sb.from("step_progress").select("enrollment_id, extra_attempts").eq("step_id", step.id).in("enrollment_id", ids)
+    : { data: [] };
+  const extraOf = Object.fromEntries((progress ?? []).map((p) => [p.enrollment_id, p.extra_attempts ?? 0]));
   const isAdmin = me.role === "admin";
   const done = (attempts ?? []).filter((a) => a.status !== "in_progress" && a.percent != null);
 
@@ -66,7 +70,10 @@ async function assessmentResults({ main, program, step, questions, enrolled, me,
     const best = finished.length ? Math.max(...finished.map((a) => Number(a.percent))) : null;
     const passed = finished.some((a) => a.passed);
     const result = passed ? "Passed" : finished.length ? "Not Passed" : mine.length ? "In Progress" : "Not Started";
-    return { e, mine, finished, best, result, used: mine.filter((a) => a.status !== "manual").length, last: finished.at(-1)?.submitted_at };
+    const used = mine.filter((a) => a.status !== "manual").length;
+    const extra = extraOf[e.id] ?? 0;
+    const allowed = step.max_attempts ? step.max_attempts + extra : null;
+    return { e, mine, finished, best, result, used, extra, allowed, usedUp: !!allowed && used >= allowed && !passed, last: finished.at(-1)?.submitted_at };
   });
   const tried = rows.filter((r) => r.finished.length);
   const avgBest = tried.length ? Math.round(tried.reduce((a, r) => a + r.best, 0) / tried.length) : null;
@@ -102,11 +109,12 @@ async function assessmentResults({ main, program, step, questions, enrolled, me,
             <td class="name"><strong>${esc(r.e.learner.full_name)}</strong><span>${esc(r.e.learner.email)}</span></td>
             <td>${r.best == null ? '<span class="muted">–</span>' : `<div class="meter"><i style="width:${r.best}%"></i></div> ${r.best}%`}</td>
             <td><span class="pill ${PILL[r.result]}">${r.result}</span></td>
-            <td>${r.used}${step.max_attempts ? ` / ${step.max_attempts}` : ""}${r.mine.some((a) => a.status === "manual") ? ' <span class="pill">Manual</span>' : ""}
+            <td>${r.used}${r.allowed ? ` / ${r.allowed}` : ""}${r.extra ? ` <span class="pill" title="Given by Admin or a trainer">+${r.extra} Extra</span>` : ""}${r.usedUp ? ' <span class="pill crit">All Used</span>' : ""}${r.mine.some((a) => a.status === "manual") ? ' <span class="pill">Manual</span>' : ""}
               ${exitsPill(r.mine.reduce((n, a) => n + (a.exit_count ?? 0), 0))}</td>
             <td>${esc(fmtDateTime(r.last))}</td>
             <td class="actions">
               ${r.mine.length ? `<button class="btn sm" data-attempts="${r.e.id}">Attempts</button>` : ""}
+              ${r.usedUp ? `<button class="btn sm" data-retake="${r.e.id}">Give Another Attempt</button>` : ""}
               ${isAdmin ? `<button class="btn sm" data-enter="${r.e.id}">Enter Score</button>` : ""}
             </td>
           </tr>`).join("") || '<tr><td colspan="6" class="muted">No learners enrolled yet.</td></tr>'}</tbody>
@@ -128,6 +136,8 @@ async function assessmentResults({ main, program, step, questions, enrolled, me,
   main.querySelector("[data-learners]").addEventListener("click", (ev) => {
     const a = ev.target.closest("[data-attempts]");
     const m = ev.target.closest("[data-enter]");
+    const g = ev.target.closest("[data-retake]");
+    if (g) giveAttempt(byEnrollment[g.dataset.retake]);
     if (a) showAttempts(byEnrollment[a.dataset.attempts]);
     if (m) changeScore(byEnrollment[m.dataset.enter], null);
   });
@@ -176,6 +186,22 @@ async function assessmentResults({ main, program, step, questions, enrolled, me,
         </tr>`).join("")}</tbody></table></div>`,
       submitLabel: "Close",
       cancelLabel: "",
+    });
+  }
+
+  function giveAttempt(r) {
+    openModal({
+      title: `Give Another Attempt: ${r.e.learner.full_name}`,
+      intro: `They have used ${r.used} of ${r.allowed} attempt${r.allowed === 1 ? "" : "s"}. This gives them one more. Their earlier attempts and scores stay in the record, and this is saved in the Activity Log.`,
+      body: `<label class="field">Reason <input class="input" name="reason" value="Test was submitted automatically"></label>`,
+      submitLabel: "Give Another Attempt",
+      onSubmit: async (f) => {
+        if (!f.reason.value.trim()) throw new Error("Please give a reason.");
+        const { error } = await sb.rpc("grant_extra_attempt", { p_step: step.id, p_enrollment: r.e.id, p_reason: f.reason.value.trim() });
+        if (error) throw error;
+        toast(`${r.e.learner.full_name} can take the test again.`);
+        reload();
+      },
     });
   }
 

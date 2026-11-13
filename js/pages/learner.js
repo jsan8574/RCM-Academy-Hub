@@ -1057,15 +1057,19 @@ async function assessmentPage(main, ctx, programId, stepId) {
   const [{ step, sections, questions }, enrollment] = await Promise.all([loadForm(stepId), myEnrollment(programId)]);
   if (!step || step.step_type !== "assessment" || (!enrollment && !mode.preview)) { location.hash = back; return; }
 
-  const { data: attempts } = enrollment
-    ? await sb.from("assessment_attempts").select("*").eq("enrollment_id", enrollment.id).eq("step_id", stepId).order("started_at")
-    : { data: [] };
+  const [{ data: attempts }, { data: prog }] = enrollment
+    ? await Promise.all([
+      sb.from("assessment_attempts").select("*").eq("enrollment_id", enrollment.id).eq("step_id", stepId).order("started_at"),
+      sb.from("step_progress").select("extra_attempts").eq("enrollment_id", enrollment.id).eq("step_id", stepId).maybeSingle(),
+    ])
+    : [{ data: [] }, { data: null }];
+  const allowed = step.max_attempts ? step.max_attempts + (prog?.extra_attempts ?? 0) : null;
   const finished = (attempts ?? []).filter((a) => a.status !== "in_progress" && a.percent != null);
   const open = (attempts ?? []).find((a) => a.status === "in_progress" && (!a.deadline_at || new Date(a.deadline_at).getTime() + 120000 > Date.now()));
   const used = (attempts ?? []).filter((a) => a.status !== "manual").length;
   const best = finished.length ? Math.max(...finished.map((a) => Number(a.percent))) : null;
   const passed = finished.some((a) => a.passed);
-  const left = step.max_attempts ? Math.max(0, step.max_attempts - used) : null;
+  const left = allowed ? Math.max(0, allowed - used) : null;
   const now = Date.now();
   const notOpen = step.unlock_at && new Date(step.unlock_at).getTime() > now;
   const closed = step.close_at && new Date(step.close_at).getTime() < now;
@@ -1086,7 +1090,7 @@ async function assessmentPage(main, ctx, programId, stepId) {
         <span class="chip">${icons.assessment} ${questions.length} Question${questions.length === 1 ? "" : "s"} · ${points} Point${points === 1 ? "" : "s"}</span>
         <span class="chip">${icons.clock} ${step.time_limit_minutes ? `${step.time_limit_minutes} Minute Time Limit` : "No Time Limit"}</span>
         ${step.passing_score != null ? `<span class="chip">${icons.flag} Pass Mark ${Number(step.passing_score)}%</span>` : ""}
-        <span class="chip">${icons.route} ${step.max_attempts ? `${left} Of ${step.max_attempts} Attempt${step.max_attempts === 1 ? "" : "s"} Left` : "Unlimited Attempts"}</span>
+        <span class="chip">${icons.route} ${allowed ? `${left} Of ${allowed} Attempt${allowed === 1 ? "" : "s"} Left` : "Unlimited Attempts"}</span>
         ${step.close_at ? `<span class="chip">${icons.calendar} Closes ${esc(fmtDateTime(step.close_at))}</span>` : ""}
         ${step.secure_mode ? `<span class="chip">${icons.flag} Secure Test</span>` : ""}
       </div>
