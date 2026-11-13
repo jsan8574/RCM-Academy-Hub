@@ -6,6 +6,8 @@ import {
 } from "../ui.js";
 import { renderFormBuilder } from "./form-builder.js";
 import { renderFormResults } from "./form-results.js";
+import { tasksTab } from "./program-tasks.js";
+import { reviewsTab } from "./program-reviews.js";
 
 const VIDEO_BUCKET = "welcome-videos";
 const UPLOAD_BUCKET = "learner-uploads";
@@ -16,6 +18,8 @@ const TABS = [
   ["welcome", "Welcome & Reading"],
   ["journey", "Learning Journey"],
   ["learners", "Learners"],
+  ["reviews", "Reviews"],
+  ["tasks", "Tasks"],
 ];
 
 // Which status buttons to offer, and what each change means for learners
@@ -80,6 +84,7 @@ export async function renderProgramEditor(main, ctx) {
     <nav class="tabs">
       ${TABS.map(([k, label]) => `<a href="#/programs/${id}/${k}" class="${k === tab ? "active" : ""}">${label}</a>`).join("")}
     </nav>
+    <div data-task-nudge></div>
     <section id="tab"></section>`;
 
   main.querySelectorAll("[data-status]").forEach((b) =>
@@ -89,8 +94,15 @@ export async function renderProgramEditor(main, ctx) {
   main.querySelector("[data-delete]")?.addEventListener("click", () => deleteProgram(program));
 
   const area = main.querySelector("#tab");
-  const tabs = { details: detailsTab, welcome: welcomeTab, journey: journeyTab, learners: learnersTab };
-  await tabs[tab](area, program, reload);
+  const tabs = { details: detailsTab, welcome: welcomeTab, journey: journeyTab, learners: learnersTab, reviews: reviewsTab, tasks: tasksTab };
+  // New programs: a nudge to list the team's tasks once
+  if (tab !== "tasks") {
+    sb.from("program_tasks").select("id", { count: "exact", head: true }).eq("program_id", id).then(({ count, error: err }) => {
+      const box = main.querySelector("[data-task-nudge]");
+      if (box && !err && count === 0) box.innerHTML = `<div class="notice info" style="margin-bottom:12px">Next: list this program's tasks and owners. <a href="#/programs/${id}/tasks"><b>Open Tasks</b></a></div>`;
+    });
+  }
+  await tabs[tab](area, program, reload, ctx.me);
 }
 
 // =====================================================================

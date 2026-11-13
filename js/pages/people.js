@@ -29,6 +29,7 @@ export async function renderPeople(main, ctx) {
       <select class="select" data-f="role">
         <option value="">All Roles</option>
         <option value="learner">Learners</option>
+        <option value="leader">Leader</option>
         <option value="ld">Trainer</option>
         <option value="admin">Admin</option>
       </select>
@@ -114,7 +115,7 @@ function row(p) {
     : p.must_change_password
       ? '<span class="pill warn">Temporary Password</span>'
       : '<span class="pill good">Ready</span>';
-  const roleClass = { admin: "prog", ld: "teal", learner: "" }[p.role];
+  const roleClass = { admin: "prog", ld: "teal", learner: "", leader: "warn" }[p.role];
 
   return `
     <tr class="${p.is_active ? "" : "inactive"}">
@@ -271,7 +272,7 @@ async function saveDetails(profileId, details) {
 }
 
 function roleOptions(selected = "learner") {
-  return ["learner", "ld", "admin"]
+  return ["learner", "leader", "ld", "admin"]
     .map((r) => `<option value="${r}" ${r === selected ? "selected" : ""}>${esc(ROLE_LABEL[r])}</option>`)
     .join("");
 }
@@ -287,7 +288,7 @@ function addPerson(main) {
       <label class="field">Work Email <input class="input" type="email" name="email" autocomplete="off" required></label>
       ${isAdmin()
         ? `<label class="field">Role <select class="select" name="role">${roleOptions()}</select>
-             <span class="hint">Trainers can build programs and manage learners. Admin can also manage trainers.</span></label>`
+             <span class="hint">Trainers build programs and manage learners. Leaders (operations supervisors and managers) review and approve programs they're added to. Admin manages everyone.</span></label>`
         : '<input type="hidden" name="role" value="learner">'}
       ${detailFields()}
       <span class="hint" style="margin-top:-6px">Required for learners: the dashboard reports by these.</span>
