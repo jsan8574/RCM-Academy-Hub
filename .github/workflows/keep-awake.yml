@@ -1,0 +1,19 @@
+name: Keep Supabase awake
+
+# Supabase pauses free projects after a week with no activity.
+# This sends a tiny request twice a week so RCM Academy Hub never pauses.
+on:
+  schedule:
+    - cron: "0 3 * * 1,4" # Mondays and Thursdays, 03:00 UTC
+  workflow_dispatch: # lets you run it by hand from the Actions tab
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Supabase
+        run: |
+          curl -sS -o /dev/null -w "auth %{http_code}\n" "https://aonqvfuaaylituyljjkj.supabase.co/auth/v1/health" \
+            -H "apikey: sb_publishable_NSEG5P4BZogmhVeniE_b3w_Vq0-vvDP"
+          curl -sS -o /dev/null -w "database %{http_code}\n" "https://aonqvfuaaylituyljjkj.supabase.co/rest/v1/programs?select=id&limit=1" \
+            -H "apikey: sb_publishable_NSEG5P4BZogmhVeniE_b3w_Vq0-vvDP"
