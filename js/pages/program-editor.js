@@ -170,6 +170,7 @@ function duplicateProgram(program, me) {
           is_required: s.is_required, passing_score: s.passing_score, completion_text: s.completion_text,
           time_limit_minutes: s.time_limit_minutes, max_attempts: s.max_attempts, shuffle_questions: s.shuffle_questions,
           shuffle_options: s.shuffle_options, show_answers: s.show_answers, identity_mode: s.identity_mode, thank_you: s.thank_you,
+          max_files: s.max_files ?? 1,
         }).select("id").single();
         if (stepErr) throw stepErr;
         const url = linkOf(s);
@@ -227,7 +228,7 @@ async function closeAndArchive(program, reload) {
 
   const { form } = openModal({
     title: `Close & Archive “${program.title}”`,
-    intro: "Download everything first. Archiving then deletes the uploaded PDFs and the welcome video to free storage. Names, progress, scores and dates stay in RCM Academy Hub for the dashboard.",
+    intro: "Download everything first. Archiving then deletes the uploaded files and the welcome video to free storage. Names, progress, scores and dates stay in RCM Academy Hub for the dashboard.",
     wide: true,
     body: `
       <ol class="wizard">
@@ -316,7 +317,7 @@ async function closeAndArchive(program, reload) {
       const status = { approved: "Approved", pending: "Waiting", rejected: "Returned" }[u.status];
       const base = `${learner}/${safeName(stepById[u.step_id]?.title)} - ${status} - ${safeName(u.file_name)}`;
       let name = base;
-      for (let n = 2; used.has(name); n++) name = base.replace(/(\.pdf)?$/i, ` (${n})$1`);
+      for (let n = 2; used.has(name); n++) name = base.replace(/(\.[a-z0-9]+)?$/i, ` (${n})$1`);
       used.add(name);
       zip.file(name, blob);
     }
@@ -628,6 +629,7 @@ function stepCard(s, i, total) {
     s.step_type === "assessment" && s.passing_score != null && `<span class="pill">Pass Mark ${Number(s.passing_score)}%</span>`,
     s.step_type === "assessment" && s.time_limit_minutes && `<span class="pill">${icons.clock} ${s.time_limit_minutes} Min</span>`,
     s.step_type === "assessment" && s.max_attempts && `<span class="pill">${s.max_attempts} Attempt${s.max_attempts === 1 ? "" : "s"}</span>`,
+    s.step_type === "upload" && (s.max_files ?? 1) > 1 && `<span class="pill">Up To ${s.max_files} Files</span>`,
     s.step_type === "upload" && '<span class="pill teal">Checked By Trainer</span>',
     !s.is_required && '<span class="pill">Optional</span>',
   ].filter(Boolean);
@@ -658,7 +660,7 @@ function stepCard(s, i, total) {
 function editStep(program, step, steps, reload) {
   const s = step ?? { step_type: "module", is_required: true };
   const { form } = openModal({
-    title: step ? "Edit step" : "Add step",
+    title: step ? "Edit Step" : "Add Step",
     wide: true,
     body: `
       <div class="two">
@@ -693,6 +695,12 @@ function editStep(program, step, steps, reload) {
           <input class="input" type="datetime-local" name="due_at" value="${toLocalInput(s.due_at)}">
         </label>
       </div>
+      <label class="field" data-for="upload">Files Allowed
+        <select class="select" name="max_files">
+          ${Array.from({ length: 10 }, (_, k) => k + 1).map((n) => `<option value="${n}" ${n === (s.max_files ?? 1) ? "selected" : ""}>${n === 1 ? "1 File" : `Up To ${n} Files`}</option>`).join("")}
+        </select>
+        <span class="hint">How many files a learner can send for this step (PDF, PNG or JPG, up to 5 MB each). A trainer approves or returns them together.</span>
+      </label>
       <div class="notice info" data-for="assessment survey">After saving, click <b>Build</b> on this step to add sections, questions, the timer and other settings.</div>
       <label class="check"><input type="checkbox" name="is_required" ${s.is_required ? "checked" : ""}> Counts Toward Completion</label>`,
     submitLabel: step ? "Save Step" : "Add Step",
@@ -724,6 +732,7 @@ function editStep(program, step, steps, reload) {
         due_at: fromLocalInput(f.due_at.value),
         completion_text: type === "module" ? f.completion_text.value.trim() || null : null,
         is_required: f.is_required.checked,
+        max_files: type === "upload" ? Number(f.max_files.value) || 1 : 1,
       };
 
       let stepId = step?.id;

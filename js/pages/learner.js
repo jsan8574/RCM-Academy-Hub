@@ -13,7 +13,15 @@ import { newMessage } from "./messages.js";
 
 const UPLOAD_BUCKET = "learner-uploads";
 const VIDEO_BUCKET = "welcome-videos";
-const MAX_PDF_MB = 5;
+const MAX_FILE_MB = 5;
+// Certificates and workbooks: PDFs, or screenshots / photos (PNG, JPG)
+const FILE_TYPES = { "application/pdf": "pdf", "image/png": "png", "image/jpeg": "jpg" };
+const FILE_ACCEPT = "application/pdf,.pdf,image/png,.png,image/jpeg,.jpg,.jpeg";
+const fileTypeOf = (file) =>
+  FILE_TYPES[file.type] ? file.type
+  : /\.pdf$/i.test(file.name) ? "application/pdf"
+  : /\.png$/i.test(file.name) ? "image/png"
+  : /\.jpe?g$/i.test(file.name) ? "image/jpeg" : null;
 const DAY = 86400000;
 
 // Who the pages are showing, and where their links point
@@ -536,7 +544,7 @@ function learnerStep(s, i, e) {
       action = `${url ? `<a class="btn" href="${esc(url)}" target="_blank" rel="noopener">Open Survey</a>` : ""}
         <button class="btn primary" data-act="survey-done" data-step="${s.id}">I've Completed It</button>`;
     }
-    if (s.step_type === "upload") action = `<button class="btn primary" data-act="upload" data-step="${s.id}">${icons.upload} Upload PDF</button>`;
+    if (s.step_type === "upload") action = `<button class="btn primary" data-act="upload" data-step="${s.id}">${icons.upload} ${(s.max_files ?? 1) > 1 ? "Upload Files" : "Upload File"}</button>`;
   }
 
   const stateClass = { done: "good", review: "prog", redo: "crit", locked: "", open: "teal" }[st.key];
@@ -544,6 +552,8 @@ function learnerStep(s, i, e) {
     ? `<div class="step-meta">Session: ${esc(fmtDateTime(s.session_start))}${s.session_end ? ` – ${esc(new Date(s.session_end).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }))}` : ""}</div>` : "";
   const score = p?.score != null && ["module", "assessment"].includes(s.step_type) ? `<span class="pill">Score ${Number(p.score)}%</span>` : "";
   const latest = ups[0];
+  // Files sent together in one go share the same upload time
+  const latestSet = latest ? ups.filter((u) => u.uploaded_at === latest.uploaded_at) : [];
 
   return `
     <li class="step-wrap" data-step-card="${s.id}">
@@ -560,7 +570,7 @@ function learnerStep(s, i, e) {
           ${s.step_type === "ilt_session" && open ? '<span class="muted small">Attendance is recorded by the Technical Training Team.</span>' : ""}
         </div>
         ${latest ? `<div class="upload-line">
-            <button class="link-btn dark" data-act="view-file" data-path="${esc(latest.file_path)}">${esc(latest.file_name)}</button>
+            ${latestSet.map((u) => `<button class="link-btn dark" data-act="view-file" data-path="${esc(u.file_path)}">${esc(u.file_name)}</button>`).join(" ")}
             <span class="muted">uploaded ${esc(fmtDate(latest.uploaded_at))}</span>
             ${latest.status === "rejected" && latest.review_comment ? `<div class="notice">Trainer: ${esc(latest.review_comment)}</div>` : ""}
           </div>` : ""}
@@ -639,44 +649,60 @@ function surveyDone(step, reload) {
 }
 
 function uploadFile(step, e, reload) {
+  const max = step.max_files ?? 1;
+  const many = max > 1;
+  const pick = many ? `Choose Up To ${max} Files` : "Choose A File";
   const { form } = openModal({
     title: `Upload: ${step.title}`,
-    intro: step.description ? esc(step.description) : "Upload your file as a PDF. The Technical Training Team will check it before it counts toward your completion.",
+    intro: step.description ? esc(step.description)
+      : `Upload ${many ? `up to ${max} files` : "your file"}: a PDF, or a screenshot or photo (PNG or JPG). The Technical Training Team will check ${many ? "them" : "it"} before ${many ? "they count" : "it counts"} toward your completion.`,
     body: `
       <label class="dropzone">
         ${icons.upload}
-        <strong data-file-name>Choose A PDF</strong>
-        <span class="muted">PDF only · up to ${MAX_PDF_MB} MB</span>
-        <input type="file" name="file" accept="application/pdf,.pdf" hidden>
+        <strong data-file-name>${pick}</strong>
+        <span class="muted">PDF, PNG or JPG · up to ${MAX_FILE_MB} MB each${many ? ` · select several at once` : ""}</span>
+        <input type="file" name="file" accept="${FILE_ACCEPT}" ${many ? "multiple" : ""} hidden>
       </label>`,
     submitLabel: "Upload",
     onSubmit: async (f) => {
-      const file = f.file.files[0];
-      if (!file) throw new Error("Choose a PDF first.");
-      if (file.type !== "application/pdf" && !/\.pdf$/i.test(file.name)) throw new Error("Please upload a PDF file.");
-      if (file.size > MAX_PDF_MB * 1024 * 1024) throw new Error(`That file is ${(file.size / 1048576).toFixed(1)} MB. The limit is ${MAX_PDF_MB} MB.`);
+      const files = [...f.file.files];
+      if (!files.length) throw new Error("Choose a file first.");
+      if (files.length > max) throw new Error(`You chose ${files.length} files. This step takes up to ${max}.`);
+      for (const file of files) {
+        if (!fileTypeOf(file)) throw new Error(`"${file.name}" isn't a PDF, PNG or JPG.`);
+        if (file.size > MAX_FILE_MB * 1024 * 1024) throw new Error(`"${file.name}" is ${(file.size / 1048576).toFixed(1)} MB. The limit is ${MAX_FILE_MB} MB.`);
+      }
 
-      // A returned (rejected) file is replaced, which frees its storage
+      // Returned (rejected) files are replaced, which frees their storage
       const rejected = (e.uploadsByStep[step.id] ?? []).filter((u) => u.status === "rejected").map((u) => u.file_path);
       if (rejected.length) await sb.storage.from(UPLOAD_BUCKET).remove(rejected);
 
-      const safe = file.name.replace(/[^\w.-]+/g, "_");
-      const path = `${e.id}/${step.id}/${Date.now()}-${safe}`;
-      const { error: upErr } = await sb.storage.from(UPLOAD_BUCKET).upload(path, file, { contentType: "application/pdf" });
-      if (upErr) throw new Error(`Upload failed: ${upErr.message}`);
-      const { error } = await sb.from("uploads").insert({
-        enrollment_id: e.id, step_id: step.id, file_path: path, file_name: file.name, size_bytes: file.size,
-      });
-      if (error) {
-        await sb.storage.from(UPLOAD_BUCKET).remove([path]);
-        throw error;
+      // Store every file first, then record them all in one go
+      const stamp = Date.now();
+      const rows = [];
+      try {
+        for (const [i, file] of files.entries()) {
+          const type = fileTypeOf(file);
+          const base = file.name.replace(/\.[^.]*$/, "").replace(/[^\w.-]+/g, "_") || "file";
+          const path = `${e.id}/${step.id}/${stamp}-${i + 1}-${base}.${FILE_TYPES[type]}`;
+          const { error: upErr } = await sb.storage.from(UPLOAD_BUCKET).upload(path, file, { contentType: type });
+          if (upErr) throw new Error(`Upload failed for "${file.name}": ${upErr.message}`);
+          rows.push({ enrollment_id: e.id, step_id: step.id, file_path: path, file_name: file.name, size_bytes: file.size });
+        }
+        const { error } = await sb.from("uploads").insert(rows);
+        if (error) throw error;
+      } catch (err) {
+        if (rows.length) await sb.storage.from(UPLOAD_BUCKET).remove(rows.map((r) => r.file_path));
+        throw err;
       }
-      toast("Uploaded. The Technical Training Team will review it.");
+      toast(`Uploaded${files.length > 1 ? ` ${files.length} files` : ""}. The Technical Training Team will review ${files.length > 1 ? "them" : "it"}.`);
       reload();
     },
   });
   form.file.addEventListener("change", () => {
-    form.querySelector("[data-file-name]").textContent = form.file.files[0]?.name ?? "Choose A PDF";
+    const files = [...form.file.files];
+    form.querySelector("[data-file-name]").textContent =
+      files.length > 1 ? `${files.length} Files: ${files.map((x) => x.name).join(", ")}` : files[0]?.name ?? pick;
   });
 }
 
