@@ -81,6 +81,30 @@ function route(main, ctx, params) {
 
 const previewOnly = () => toast("This is the learner view. Nothing is saved here.");
 
+// ---------------------------------------------------------------------
+// Live Now: while the portal is open, tell trainers where this learner is
+// (every 30 seconds, and straight away when they move). Not in the learner view.
+// ---------------------------------------------------------------------
+let here = { page: "home", program: null, step: null };
+let beating = false;
+function setHere(page, program = null, step = null) {
+  if (mode.preview) return;
+  here = { page, program, step };
+  beat();
+  if (beating) return;
+  beating = true;
+  setInterval(beat, 30000);
+  document.addEventListener("visibilitychange", beat);
+  window.addEventListener("hashchange", () => setTimeout(beat, 100));
+}
+function beat() {
+  if (mode.preview) return;
+  const onLearning = !location.hash || location.hash.startsWith("#/home");
+  const h = onLearning ? here : { page: "portal", program: null, step: null };
+  sb.rpc("learner_heartbeat", { p_page: h.page, p_program: h.program, p_step: h.step, p_visible: document.visibilityState === "visible" })
+    .then(() => {}, () => {});
+}
+
 // Learners go back to My Learning; in the learner view the program page is the start
 const backLink = (cls) => mode.preview ? "" : `<a class="${cls}" href="${mode.base}">${icons.back} My Learning</a>`;
 
@@ -192,6 +216,7 @@ const duePill = (info) => (info ? `<span class="pill ${info.cls}">${esc(info.tex
 // Dashboard
 // =====================================================================
 async function dashboard(main) {
+  setHere("home");
   main.innerHTML = `
     <header class="topbar"><div><h1>My Learning</h1><p>Welcome, ${esc(mode.name.split(" ")[0])}. Here's where you are with each program.</p></div></header>
     <div id="dash"><div class="empty"><div>Loading…</div></div></div>`;
@@ -295,6 +320,7 @@ function programCard(e) {
 // Program page
 // =====================================================================
 async function programPage(main, ctx, programId) {
+  setHere("program", programId);
   main.innerHTML = '<div class="empty" style="margin-top:24px"><div>Loading…</div></div>';
   let e;
   try {
@@ -717,6 +743,7 @@ async function viewFile(path) {
 // Module player: the module runs inside RCM Academy Hub and reports completion
 // =====================================================================
 async function modulePlayer(main, ctx, programId, stepId) {
+  setHere("module", programId, stepId);
   const back = `${mode.base}/${programId}`;
   const [{ data: step }, { data: link }, { data: enrollment }] = await Promise.all([
     sb.from("program_steps").select("*").eq("id", stepId).maybeSingle(),
@@ -1014,6 +1041,7 @@ const answerText = (q, v) => {
 // Assessment
 // ---------------------------------------------------------------------
 async function assessmentPage(main, ctx, programId, stepId) {
+  setHere("assessment", programId, stepId);
   const back = `${mode.base}/${programId}`;
   main.innerHTML = '<div class="empty" style="margin-top:24px"><div>Loading…</div></div>';
   const [{ step, sections, questions }, enrollment] = await Promise.all([loadForm(stepId), myEnrollment(programId)]);
@@ -1091,6 +1119,7 @@ async function assessmentPage(main, ctx, programId, stepId) {
 }
 
 function takeQuiz(main, step, sections, questions, attempt, back) {
+  setHere("test", step.program_id, step.id);
   const byId = Object.fromEntries(questions.map((q) => [q.id, q]));
   const ordered = (attempt.order?.questions ?? questions.map((q) => q.id)).map((id) => byId[id]).filter(Boolean);
   const optionOrder = attempt.order?.options ?? {};
@@ -1192,6 +1221,7 @@ function takeQuiz(main, step, sections, questions, attempt, back) {
 }
 
 function showQuizResult(main, step, ordered, answers, data, back) {
+  setHere("assessment", step.program_id, step.id);
   const again = `${back}/assessment/${step.id}`;
   if (data.expired) {
     main.innerHTML = `${formHeader(back, step.title)}
@@ -1235,6 +1265,7 @@ function assessmentPageAgain(main, href) {
 // Survey
 // ---------------------------------------------------------------------
 async function surveyPage(main, ctx, programId, stepId) {
+  setHere("survey", programId, stepId);
   const back = `${mode.base}/${programId}`;
   main.innerHTML = '<div class="empty" style="margin-top:24px"><div>Loading…</div></div>';
   const [{ step, sections, questions }, enrollment] = await Promise.all([loadForm(stepId), myEnrollment(programId)]);

@@ -30,6 +30,51 @@ async function all(build) {
   }
 }
 
+// ---------------------------------------------------------------------
+// Live Now: learners with the portal open right now and where they are
+// (their page reports every 30 seconds; this card refreshes every 15)
+// ---------------------------------------------------------------------
+const DOING = {
+  home: "On My Learning", program: "Viewing A Program", module: "In A Module", assessment: "Viewing Test Details",
+  test: "Taking A Test", survey: "Answering A Survey", portal: "Elsewhere In The Portal",
+};
+function watchLiveNow(box) {
+  const since = (t) => {
+    const m = Math.max(0, Math.round((Date.now() - new Date(t)) / 60000));
+    return m < 1 ? "Just Now" : m < 60 ? `${m} Min` : `${Math.floor(m / 60)} Hr ${m % 60} Min`;
+  };
+  const draw = async () => {
+    const { data, error } = await sb.from("learner_presence")
+      .select("profile_id, program_id, step_id, page, visible, page_since, last_seen, program:programs(title), step:program_steps(title), learner:profiles(full_name, email, role)")
+      .gte("last_seen", new Date(Date.now() - 90000).toISOString())
+      .order("page_since", { ascending: false });
+    if (error) { box.innerHTML = `<div class="muted">Couldn't check who is online: ${esc(error.message)}</div>`; return; }
+    const online = (data ?? []).filter((r) => r.learner?.role === "learner");
+    box.innerHTML = `
+      <div class="live-head">
+        <h2 class="section-title" style="margin:0"><span class="live-dot"></span> Live Now${online.length ? ` (${online.length})` : ""}</h2>
+        <span class="muted small">Learners with the portal open · updates every 15 seconds · ${esc(new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" }))}</span>
+      </div>
+      ${online.length ? `<div class="table-wrap" style="margin-top:10px"><table class="data">
+        <thead><tr><th>Learner</th><th>Doing</th><th>Program / Step</th><th>For</th><th>Status</th><th></th></tr></thead>
+        <tbody>${online.map((r) => `<tr>
+          <td class="name"><strong>${esc(r.learner.full_name)}</strong><span>${esc(r.learner.email)}</span></td>
+          <td>${r.page === "test" ? `<b>${DOING.test}</b>` : esc(DOING[r.page] ?? r.page)}</td>
+          <td class="name">${r.program ? `<strong>${esc(r.program.title)}</strong>` : '<span class="muted">–</span>'}${r.step ? `<span>${esc(r.step.title)}</span>` : ""}</td>
+          <td>${esc(since(r.page_since))}</td>
+          <td>${r.visible ? '<span class="pill good">Active</span>' : '<span class="pill warn">Tab In Background</span>'}</td>
+          <td class="actions">${["test", "assessment", "survey"].includes(r.page) && r.program_id && r.step_id
+            ? `<a class="btn sm" href="#/programs/${esc(r.program_id)}/results/${esc(r.step_id)}">${r.page === "survey" ? "Responses" : "Results"}</a>` : ""}</td>
+        </tr>`).join("")}</tbody></table></div>`
+        : '<p class="muted" style="margin:8px 0 0">No Learners Are Online Right Now.</p>'}`;
+  };
+  draw();
+  const poll = setInterval(() => {
+    if (!document.body.contains(box)) return clearInterval(poll);
+    if (document.visibilityState === "visible") draw();
+  }, 15000);
+}
+
 async function loadData() {
   const [programs, enrollments, progress, steps, stepProgress, attempts, uploads, threads, exclusions, responses, scaleQs, testEvents] = await Promise.all([
     all(() => sb.from("programs").select("id, title, program_type, status, start_date, due_date, owner:profiles!programs_owner_id_fkey(full_name)").order("title")),
@@ -364,7 +409,9 @@ export async function renderDashboard(main, ctx) {
         <button type="button" class="clear-filters" data-clear hidden>Clear Filters</button>
       </div>
     </div>
+    <section class="card live-box" data-live-now><div class="muted">Checking who is online…</div></section>
     <div id="dash"><div class="empty"><div>Loading…</div></div></div>`;
+  watchLiveNow(main.querySelector("[data-live-now]"));
 
   let data;
   try {

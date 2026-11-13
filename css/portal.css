@@ -968,3 +968,9 @@ body.secure-test-on main input, body.secure-test-on main textarea { user-select:
 .step-grip { color: var(--ink-3); display: grid; place-items: center; }
 .step-grip svg { width: 18px; height: 18px; }
 @media (max-width: 860px) { .steps.sortable .step { grid-template-columns: 28px minmax(0, 1fr); } .step-grip { display: none; } }
+
+/* Results: Taking It Now (form-results.js) */
+.live-box { margin-bottom: 16px; }
+.live-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+.live-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--good-ink); margin-right: 6px; vertical-align: middle; animation: ping-blue 2s infinite; }
+@media (prefers-reduced-motion: reduce) { .live-dot { animation: none; } }

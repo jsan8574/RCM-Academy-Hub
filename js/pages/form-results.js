@@ -92,11 +92,12 @@ async function assessmentResults({ main, program, step, questions, enrolled, me,
       <div class="card kpi"><span class="label">Pass Rate</span><b>${passRate == null ? "–" : `${passRate}%`}</b><span class="muted small">of learners who took it</span></div>
       <div class="card kpi"><span class="label">Average Time</span><b>${avgTime == null ? "–" : `${avgTime} min`}</b><span class="muted small">per attempt</span></div>
     </div>
+    <section class="card live-box" data-live><div class="muted">Checking who is taking this test…</div></section>
     ${isAdmin ? "" : '<div class="notice info" style="margin-bottom:12px">Only Admin can change scores or enter scores manually.</div>'}
     <div class="table-wrap">
       <table class="data">
         <thead><tr><th>Learner</th><th>Best Score</th><th>Result</th><th>Attempts</th><th>Last Submitted</th><th></th></tr></thead>
-        <tbody>${rows.map((r) => `
+        <tbody data-learners>${rows.map((r) => `
           <tr>
             <td class="name"><strong>${esc(r.e.learner.full_name)}</strong><span>${esc(r.e.learner.email)}</span></td>
             <td>${r.best == null ? '<span class="muted">–</span>' : `<div class="meter"><i style="width:${r.best}%"></i></div> ${r.best}%`}</td>
@@ -121,8 +122,10 @@ async function assessmentResults({ main, program, step, questions, enrolled, me,
       </table>
     </div>`;
 
+  watchLive(main.querySelector("[data-live]"), step, enrolled, reload);
+
   const byEnrollment = Object.fromEntries(rows.map((r) => [r.e.id, r]));
-  main.querySelector("tbody").addEventListener("click", (ev) => {
+  main.querySelector("[data-learners]").addEventListener("click", (ev) => {
     const a = ev.target.closest("[data-attempts]");
     const m = ev.target.closest("[data-enter]");
     if (a) showAttempts(byEnrollment[a.dataset.attempts]);
@@ -236,6 +239,82 @@ async function assessmentResults({ main, program, step, questions, enrolled, me,
       X.writeFile(wb, `${safeName(step.title)} - Assessment Results.xlsx`);
     } catch (err) { toast(err.message, "err"); }
   });
+}
+
+// ---------------------------------------------------------------------
+// Taking It Now: learners in this test right now, refreshed every 10 seconds
+// ---------------------------------------------------------------------
+const EXIT_KINDS = ["left_page", "fullscreen_exit", "print_screen"];
+const ago = (t) => {
+  const s = Math.max(0, Math.round((Date.now() - new Date(t)) / 1000));
+  return s < 60 ? `${s} sec ago` : s < 3600 ? `${Math.floor(s / 60)} min ago` : `${Math.floor(s / 3600)} hr ago`;
+};
+const clock = (ms) => { const s = Math.max(0, Math.round(ms / 1000)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; };
+
+function watchLive(box, step, enrolled, reload) {
+  const who = Object.fromEntries(enrolled.map((e) => [e.id, e.learner]));
+  let seen = null;           // attempt ids on screen last time
+  let finishedSome = false;
+
+  const draw = async () => {
+    const { data: open, error } = await sb.from("assessment_attempts")
+      .select("id, enrollment_id, started_at, deadline_at, exit_count")
+      .eq("step_id", step.id).eq("status", "in_progress").order("started_at");
+    if (error) { box.innerHTML = `<div class="muted">Couldn't check who is taking this test: ${esc(error.message)}</div>`; return; }
+    const now = Date.now();
+    // Still running: within the time limit (plus the 2-minute grace), or started in the last 3 hours if there's no limit
+    const live = (open ?? []).filter((a) => who[a.enrollment_id] && (a.deadline_at
+      ? new Date(a.deadline_at).getTime() + 120000 > now
+      : now - new Date(a.started_at).getTime() < 3 * 3600000));
+    const ids = live.map((a) => a.id);
+    const { data: events } = ids.length && step.secure_mode
+      ? await sb.from("assessment_events").select("attempt_id, kind, seconds_away, created_at").in("attempt_id", ids).order("created_at")
+      : { data: [] };
+
+    if (seen && [...seen].some((id) => !ids.includes(id))) finishedSome = true;
+    seen = new Set(ids);
+
+    const rowsHtml = live.map((a) => {
+      const mine = (events ?? []).filter((ev) => ev.attempt_id === a.id);
+      const last = mine.at(-1);
+      const lastExit = mine.findLastIndex((ev) => EXIT_KINDS.includes(ev.kind));
+      const lastBack = mine.findLastIndex((ev) => ["returned", "resumed"].includes(ev.kind));
+      const away = step.secure_mode && lastExit > lastBack;
+      const l = who[a.enrollment_id];
+      return `<tr>
+        <td class="name"><strong>${esc(l.full_name)}</strong><span>${esc(l.email)}</span></td>
+        <td>${esc(fmtDateTime(a.started_at))}</td>
+        <td>${a.deadline_at ? `<b data-deadline="${esc(a.deadline_at)}">${clock(new Date(a.deadline_at) - now)}</b>` : '<span class="muted">No Limit</span>'}</td>
+        <td>${away ? '<span class="pill crit">Away Now</span>' : '<span class="pill good">On The Test</span>'}</td>
+        <td>${step.secure_mode ? (a.exit_count ? exitsPill(a.exit_count) : "0") : '<span class="muted">–</span>'}</td>
+        <td>${last ? `${esc(eventText(last))}<div class="muted small">${ago(last.created_at)}</div>` : `<span class="muted">Started ${ago(a.started_at)}</span>`}</td>
+      </tr>`;
+    }).join("");
+
+    box.innerHTML = `
+      <div class="live-head">
+        <h2 class="section-title" style="margin:0"><span class="live-dot"></span> Taking It Now${live.length ? ` (${live.length})` : ""}</h2>
+        <span class="muted small">Updates every 10 seconds · ${esc(new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" }))}</span>
+      </div>
+      ${finishedSome ? '<div class="notice info" style="margin-top:10px">Someone just finished. <button type="button" class="link-btn dark" data-refresh>Refresh Results</button> to see their score.</div>' : ""}
+      ${live.length ? `<div class="table-wrap" style="margin-top:10px"><table class="data">
+          <thead><tr><th>Learner</th><th>Started</th><th>Time Left</th><th>Status</th><th>Exits</th><th>Last Activity</th></tr></thead>
+          <tbody>${rowsHtml}</tbody></table></div>`
+        : '<p class="muted" style="margin:8px 0 0">No One Is Taking This Test Right Now.</p>'}
+      ${!step.secure_mode && live.length ? '<p class="muted small" style="margin:8px 0 0">Secure Test Mode is off for this test, so leaving the test isn\'t tracked.</p>' : ""}`;
+    box.querySelector("[data-refresh]")?.addEventListener("click", reload);
+  };
+
+  draw();
+  const poll = setInterval(() => {
+    if (!document.body.contains(box)) return stopAll();
+    if (document.visibilityState === "visible") draw();
+  }, 10000);
+  const tick = setInterval(() => {
+    if (!document.body.contains(box)) return stopAll();
+    box.querySelectorAll("[data-deadline]").forEach((el) => { el.textContent = clock(new Date(el.dataset.deadline) - Date.now()); });
+  }, 1000);
+  function stopAll() { clearInterval(poll); clearInterval(tick); }
 }
 
 // =====================================================================
