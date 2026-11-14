@@ -107,15 +107,15 @@ export async function renderTasksDashboard(main) {
     const pct = (n) => `${Math.max(0, Math.min(100, n))}%`;
 
     box.innerHTML = `
-      <div class="kpi-grid">
+      <div class="kpi-grid thd-kpis">
         <button class="card kpi thd-kpi" data-kpi="open"><span class="label">Open Tasks</span><b>${open.length}</b><span class="muted small">across ${new Set(open.map((t) => t.program_id)).size} program${new Set(open.map((t) => t.program_id)).size === 1 ? "" : "s"}</span></button>
-        <button class="card kpi thd-kpi ${overdue.length ? "warn" : ""}" data-kpi="overdue"><span class="label">Overdue</span><b style="${overdue.length ? "color:var(--crit-ink)" : ""}">${overdue.length}</b><span class="muted small">past their due date</span></button>
+        <button class="card kpi thd-kpi ${overdue.length ? "warn" : ""}" data-kpi="overdue"><span class="label">Overdue</span><b class="${overdue.length ? "hot" : ""}">${overdue.length}</b><span class="muted small">past their due date</span></button>
         <div class="card kpi"><span class="label">Done ${esc(PERIODS[filters.period])}</span><b>${doneIn.length}</b><span class="muted small">${filters.period === "all" ? "tasks finished" : `of ${dueIn.length} due in this period`}</span></div>
         <div class="card kpi"><span class="label">Hours Logged</span><b>${fmtH(totalH)}</b><span class="muted small">${people.length ? `utilization ${teamPct}% (${HOURS_PER_DAY} h/day, Mon–Fri)` : ""}</span></div>
       </div>
 
-      <section class="card" style="margin-top:12px">
-        <h2 class="section-title">Needs Attention</h2>
+      <section class="card ${shownAtt.length ? "thd-attention" : ""}" style="margin-top:12px">
+        <h2 class="section-title">${shownAtt.length ? `${icons.flag} ` : ""}Needs Attention${att.length ? ` <span class="thd-count">${att.length}</span>` : ""}</h2>
         ${shownAtt.length ? `<div class="att-list">${shownAtt.map((a) => `
           <a class="att-item" href="#/programs/${a.t.program_id}/tasks" ${go(a.t.program_id, a.label === "Overdue" ? "overdue" : a.label === "Blocked" ? "Blocked" : "open", a.t.owner_id ?? "none")}>
             <span class="att-dot ${a.kind}">${a.rank === 1 ? icons.flag : icons.clock}</span>

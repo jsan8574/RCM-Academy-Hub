@@ -1065,3 +1065,26 @@ table.data td { padding: 8px 10px; }
 .ss-row .muted { font-size: 12px; }
 .ss-row .ss-why { display: block; font-size: 12px; color: var(--ink-3); margin-top: 2px; }
 @media (max-width: 600px) { .ss-row { grid-template-columns: 1fr; } }
+
+/* Learner Feedback: word cloud from survey comments */
+.word-cloud { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 4px 12px; padding: 12px; border-radius: 8px; background: var(--surface-2); line-height: 1.15; }
+.word-cloud span { cursor: default; }
+
+/* Tasks & Hours: dark headline numbers */
+.thd-kpis .kpi { background: var(--navy-800); border-color: var(--navy-800); color: #fff; box-shadow: none; }
+.thd-kpis .kpi::before { background: var(--teal-400); }
+.thd-kpis .kpi.warn::before { background: #f0a24b; }
+.thd-kpis .kpi .label { color: var(--mist-300); }
+.thd-kpis .kpi b { color: #fff; }
+.thd-kpis .kpi b.hot { color: #ffb4a8; }
+.thd-kpis .kpi .muted { color: #b9cbd8; }
+.thd-kpis .thd-kpi:hover { background: var(--navy-950); border-color: var(--teal-400); }
+
+/* Tasks & Hours: Needs Attention stands out with a soft warm tint */
+.thd-attention { background: #fff8ee; border-color: #f2d9b3; border-left: 4px solid #e8973a; }
+.thd-attention .section-title { display: flex; align-items: center; gap: 8px; color: #8a4b0f; }
+.thd-attention .section-title svg { width: 17px; height: 17px; color: #e07b25; }
+.thd-count { display: inline-grid; place-items: center; min-width: 22px; height: 22px; padding: 0 7px; border-radius: 11px; background: #e8973a; color: #fff; font-size: 12px; font-weight: 700; }
+.thd-attention .att-list { gap: 6px; }
+.thd-attention .att-item { margin: 0; background: #fff; border: 1px solid #f4e3c8; }
+.thd-attention .att-item:hover { background: #fff3e2; border-color: #ecc58e; }

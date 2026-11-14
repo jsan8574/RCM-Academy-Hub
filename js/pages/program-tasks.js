@@ -89,23 +89,24 @@ export async function tasksTab(area, program, reload) {
   ]);
   if (error) { area.innerHTML = `<div class="empty"><div><strong>Couldn't Load Tasks</strong>${esc(error.message)}</div></div>`; return; }
   const session = program.task_session_date ?? program.start_date ?? null;
+  const project = program.program_type === "project";
   const name = Object.fromEntries(team.map((p) => [p.id, p.full_name]));
   const hours = {};
   for (const t of time ?? []) hours[t.task_id] = (hours[t.task_id] ?? 0) + Number(t.total_hours);
   const redraw = () => tasksTab(area, program, reload);
 
-  const sessionField = `<label class="field" style="max-width:220px">Session Date
+  const sessionField = project ? "" : `<label class="field" style="max-width:220px">Session Date
       <input class="input" type="date" data-session value="${esc(session ?? "")}">
       <span class="hint">Checklist due dates count from this.</span></label>`;
 
   if (!tasks.length) {
     area.innerHTML = `
       <div class="card" style="text-align:center;padding:28px 18px">
-        <h2 style="margin:0 0 6px">Add This Program's Tasks</h2>
-        <p class="muted" style="max-width:540px;margin:0 auto 14px">List the deliverables for ${esc(program.title)} and who owns each one. Start from the Technical Training checklist, or add your own.</p>
-        <div style="display:flex;justify-content:center;margin-bottom:14px;text-align:left">${sessionField}</div>
-        <button class="btn primary" data-checklist>Add From Checklist</button>
-        <button class="btn" data-add>${icons.plus} Add Task</button>
+        <h2 style="margin:0 0 6px">Add This ${project ? "Project" : "Program"}'s Tasks</h2>
+        <p class="muted" style="max-width:540px;margin:0 auto 14px">List the deliverables for ${esc(program.title)} and who owns each one.${project ? " Each task gets an owner, a due date and a status, and the team logs hours against it." : " Start from the Technical Training checklist, or add your own."}</p>
+        ${project ? "" : `<div style="display:flex;justify-content:center;margin-bottom:14px;text-align:left">${sessionField}</div>
+        <button class="btn primary" data-checklist>Add From Checklist</button>`}
+        <button class="btn ${project ? "primary" : ""}" data-add>${icons.plus} Add Task</button>
       </div>`;
   } else {
     const shown = tasks.filter((t) =>
@@ -121,7 +122,7 @@ export async function tasksTab(area, program, reload) {
           <p class="muted" style="margin:0 0 6px">${done} of ${tasks.length} done${overdue ? ` · <b style="color:var(--crit-ink)">${overdue} overdue</b>` : ""} · ${fmtH(total)} logged</p>
         </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <button class="btn" data-checklist>Add From Checklist</button>
+          ${project ? "" : '<button class="btn" data-checklist>Add From Checklist</button>'}
           <button class="btn primary" data-add>${icons.plus} Add Task</button>
         </div>
       </div>
@@ -154,7 +155,7 @@ export async function tasksTab(area, program, reload) {
     area.querySelectorAll("[data-v]").forEach((el) => el.addEventListener("change", () => { view[el.dataset.v] = el.value; redraw(); }));
   }
 
-  area.querySelector("[data-session]").addEventListener("change", async (e) => {
+  area.querySelector("[data-session]")?.addEventListener("change", async (e) => {
     const value = e.target.value || null;
     const { error: err } = await sb.from("programs").update({ task_session_date: value }).eq("id", program.id);
     if (err) return toast(err.message, "err");
@@ -175,7 +176,7 @@ export async function tasksTab(area, program, reload) {
       });
     } else toast("Session date saved.");
   });
-  area.querySelector("[data-checklist]").addEventListener("click", () => addFromChecklist(program, tasks, team, redraw));
+  area.querySelector("[data-checklist]")?.addEventListener("click", () => addFromChecklist(program, tasks, team, redraw));
   area.querySelector("[data-add]").addEventListener("click", () => editTask(program, null, team, redraw));
   area.querySelector("tbody")?.addEventListener("click", (e) => {
     const ed = e.target.closest("[data-edit]");

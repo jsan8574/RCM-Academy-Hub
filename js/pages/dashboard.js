@@ -2,7 +2,7 @@
 // with Excel and PDF exports of exactly what's on screen.
 import { sb } from "../supabase.js";
 import {
-  esc, toast, icons, fmtDate, statusPill, PROGRAM_TYPE, PROGRAM_STATUS, STEP_TYPE,
+  esc, toast, icons, fmtDate, statusPill, PROGRAM_TYPE, TRAINING_TYPE, PROGRAM_STATUS, STEP_TYPE,
   LIBS, loadScript, safeName,
 } from "../ui.js";
 
@@ -87,10 +87,11 @@ async function loadData() {
     all(() => sb.from("message_threads").select("id, program_id, status")),
     all(() => sb.from("enrollment_exclusions").select("enrollment_id, step_id")),
     all(() => sb.from("survey_responses").select("step_id, respondent_id, answers, submitted_at")),
-    all(() => sb.from("assessment_questions").select("id, step_id, qtype").in("qtype", ["rating", "likert", "nps"])),
+    all(() => sb.from("assessment_questions").select("id, step_id, qtype").in("qtype", ["rating", "likert", "nps", "text", "paragraph"])),
     all(() => sb.from("assessment_events").select("attempt_id, kind, seconds_away, created_at").order("created_at")),
   ]);
-  return { programs, enrollments, progress, steps, stepProgress, attempts, uploads, threads, exclusions, responses, scaleQs, testEvents };
+  // Projects are task lists without learners; they live on Tasks & Hours, not here
+  return { programs: programs.filter((p) => p.program_type !== "project"), enrollments, progress, steps, stepProgress, attempts, uploads, threads, exclusions, responses, scaleQs, testEvents };
 }
 
 function periodStart(key) {
@@ -130,6 +131,31 @@ function feedbackOf(responses, scaleQs) {
     agree: likert.length ? Math.round((likert.filter((v) => v >= 3).length / likert.length) * 100) : null,
   };
 }
+// Comments (Short Text and Long Text answers) → the most-used words, for the word cloud
+const STOP = new Set(("a about above after again all also am an and any are as at be because been before being below between both but by can " +
+  "could did do does doing down during each even few for from further get got had has have having he her here hers him his how i if in into is it its " +
+  "itself just me more most much my myself no nor not now of off on once only or other our ours out over own really same she should so some such than " +
+  "that the their theirs them then there these they this those through to too under until up us very was we well were what when where which while " +
+  "who whom why will with would you your yours yourself im ive dont didnt doesnt isnt wasnt cant wont thats its lot lots thing things one also please need needs maybe " +
+  "na po yung ang mga sa ng ko ako lang din rin naman pa kasi").split(" "));
+function wordsOf(responses, qs) {
+  const textQs = qs.filter((q) => q.qtype === "text" || q.qtype === "paragraph");
+  const count = new Map();
+  let comments = 0;
+  for (const r of responses) {
+    for (const q of textQs) {
+      if (q.step_id !== r.step_id) continue;
+      const v = String(r.answers?.[q.id] ?? "").trim();
+      if (!v) continue;
+      comments++;
+      for (const w of new Set(v.toLowerCase().replace(/[’']/g, "").match(/[a-z][a-z-]{2,}/g) ?? [])) {
+        if (!STOP.has(w) && !/^(n\/?a|none|nothing)$/.test(w)) count.set(w, (count.get(w) ?? 0) + 1);
+      }
+    }
+  }
+  return { comments, words: [...count].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 30) };
+}
+
 const fmtNps = (n) => (n == null ? "–" : `${n > 0 ? "+" : ""}${n}`);
 const fmtRating = (r) => (r == null ? "–" : `${r} / 5`);
 
@@ -297,7 +323,7 @@ function compute(d) {
     attempts: attemptsInPeriod.length,
     overdue: count("Overdue"), dueSoon: count("Due Soon"),
     pendingReviews, openMessages,
-    fb: fbPeriod, surveyRate: surveyAssigned ? Math.round((surveyDone / surveyAssigned) * 100) : null,
+    fb: fbPeriod, cloud: wordsOf(responsesInPeriod, d.scaleQs), surveyRate: surveyAssigned ? Math.round((surveyDone / surveyAssigned) * 100) : null,
   };
 
   // Raw lists for the Excel file
@@ -403,7 +429,7 @@ export async function renderDashboard(main, ctx) {
         <select class="chip-select" data-f="program" aria-label="Program"><option value="">All Programs</option></select>
         <select class="chip-select" data-f="type" aria-label="Program type">
           <option value="">All Types</option>
-          ${Object.entries(PROGRAM_TYPE).map(([k, l]) => `<option value="${k}">${l}</option>`).join("")}
+          ${Object.entries(TRAINING_TYPE).map(([k, l]) => `<option value="${k}">${l}</option>`).join("")}
         </select>
         ${Object.keys(GROUPS).map((k) => `<select class="chip-select" data-f="${k}" aria-label="${GROUPS[k]}"></select>`).join("")}
         <button type="button" class="clear-filters" data-clear hidden>Clear Filters</button>
@@ -527,20 +553,37 @@ function feedbackCard(s) {
         <b>${fb.rating ?? "–"}<small> / 5</small></b>
         <div>${stars(fb.rating)}<span class="muted small">Average rating from ${plural(fb.responses, "response")}</span></div>
       </div>
-      <div class="fb-row">
+      ${fb.nps == null ? "" : `<div class="fb-row">
         <div class="fb-label"><span>Recommendation Score (NPS)</span><b>${fmtNps(fb.nps)}</b></div>
-        <div class="nps-track"><i style="left:${npsPos}%"${fb.nps == null ? ' hidden' : ""}></i></div>
+        <div class="nps-track"><i style="left:${npsPos}%"></i></div>
         <div class="nps-ticks"><span>−100</span><span>0</span><span>+100</span></div>
-      </div>
-      <div class="fb-row">
-        <div class="fb-label"><span>Agree Or Strongly Agree</span><b>${fb.agree == null ? "–" : `${fb.agree}%`}</b></div>
-        <div class="hbar-track"><i style="width:${fb.agree ?? 0}%"></i></div>
-      </div>
+      </div>`}
+      ${fb.agree == null ? "" : `<div class="fb-row">
+        <div class="fb-label"><span>Agree Or Strongly Agree</span><b>${fb.agree}%</b></div>
+        <div class="hbar-track"><i style="width:${fb.agree}%"></i></div>
+      </div>`}
       <div class="fb-row">
         <div class="fb-label"><span>Response Rate</span><b>${s.surveyRate == null ? "–" : `${s.surveyRate}%`}</b></div>
         <div class="hbar-track"><i style="width:${s.surveyRate ?? 0}%"></i></div>
       </div>
+      ${wordCloud(s.cloud)}
     </div>`;
+}
+
+function wordCloud({ comments, words }) {
+  if (!words.length) return `<div class="fb-row"><div class="fb-label"><span>What Learners Said</span></div><p class="muted small" style="margin:0">No written comments in this period.</p></div>`;
+  const top = words[0][1];
+  const low = words.at(-1)[1];
+  const TONES = ["var(--navy-800)", "var(--primary)", "var(--accent-ink)", "#2b8a80", "var(--ink-2)"];
+  // Alphabetical so the cloud doesn't read as a ranked list; size shows how often a word was used
+  const shown = [...words].sort((a, b) => a[0].localeCompare(b[0]));
+  return `<div class="fb-row">
+    <div class="fb-label"><span>What Learners Said</span><span class="muted small">${plural(comments, "comment")}</span></div>
+    <div class="word-cloud">${shown.map(([w, n], i) => {
+      const k = top === low ? 0.5 : (n - low) / (top - low);
+      return `<span style="font-size:${(12 + k * 16).toFixed(1)}px;font-weight:${k > 0.6 ? 800 : k > 0.3 ? 700 : 500};color:${TONES[i % TONES.length]}" title="${esc(w)}: ${plural(n, "comment")}">${esc(w)}</span>`;
+    }).join("")}</div>
+  </div>`;
 }
 
 function attentionCard(v) {

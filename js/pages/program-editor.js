@@ -2,7 +2,7 @@
 import { sb } from "../supabase.js";
 import {
   esc, toast, openModal, icons, stepIcon, statusPill, fmtDate, fmtDateTime, toLocalInput, fromLocalInput,
-  PROGRAM_TYPE, PROGRAM_STATUS, STEP_TYPE, LIBS, loadScript, downloadBlob, safeName,
+  PROGRAM_TYPE, TRAINING_TYPE, isProject, PROGRAM_STATUS, STEP_TYPE, LIBS, loadScript, downloadBlob, safeName,
 } from "../ui.js";
 import { renderFormBuilder } from "./form-builder.js";
 import { renderFormResults } from "./form-results.js";
@@ -21,6 +21,23 @@ const TABS = [
   ["reviews", "Reviews"],
   ["tasks", "Tasks"],
 ];
+
+// Projects / initiatives: a task list only
+const PROJECT_TABS = [["tasks", "Tasks"], ["details", "Details"]];
+const PROJECT_NEXT = {
+  draft:     [["live", "Start Project"]],
+  scheduled: [["live", "Start Project"]],
+  live:      [["completed", "Mark Completed"], ["on_hold", "Put On Hold"]],
+  on_hold:   [["live", "Resume"], ["completed", "Mark Completed"]],
+  completed: [["archived", "Archive"], ["live", "Reopen"]],
+  archived:  [["completed", "Unarchive"]],
+};
+const PROJECT_EFFECT = {
+  live: "The project is under way.",
+  on_hold: "The project is paused. Tasks and hours stay as they are.",
+  completed: "The project is marked completed. Tasks and hours stay on Tasks & Hours.",
+  archived: "The project leaves the Programs list (choose All to see it) and the Tasks & Hours dashboard. Nothing is deleted.",
+};
 
 // Which status buttons to offer, and what each change means for learners
 const NEXT_STATUS = {
@@ -48,7 +65,6 @@ const LINK_HINT = {
 
 export async function renderProgramEditor(main, ctx) {
   const [id, tabParam] = ctx.params;
-  const tab = TABS.some(([k]) => k === tabParam) ? tabParam : "details";
   const reload = () => renderProgramEditor(main, ctx);
 
   main.innerHTML = '<div class="empty" style="margin-top:24px"><div>Loading…</div></div>';
@@ -64,39 +80,42 @@ export async function renderProgramEditor(main, ctx) {
   if (tabParam === "form") return renderFormBuilder(main, program, ctx.params[2]);
   if (tabParam === "results") return renderFormResults(main, program, ctx.params[2], ctx.me);
 
+  const project = isProject(program);
+  const tabList = project ? PROJECT_TABS : TABS;
+  const tab = tabList.some(([k]) => k === tabParam) ? tabParam : tabList[0][0];
   const canDelete = program.status === "draft" || ctx.me.role === "admin";
   main.innerHTML = `
     <header class="topbar">
       <div>
         <a class="back-link" href="#/programs">${icons.back} Programs</a>
         <h1>${esc(program.title)}</h1>
-        <p>${statusPill(program.status)} &nbsp;${esc(PROGRAM_TYPE[program.program_type])}${program.audience ? ` · ${esc(program.audience)}` : ""}</p>
+        <p>${statusPill(program.status)} &nbsp;${esc(PROGRAM_TYPE[program.program_type])}${program.audience && !project ? ` · ${esc(program.audience)}` : ""}</p>
       </div>
       <div class="top-actions">
-        ${NEXT_STATUS[program.status].map(([to, label], i) =>
+        ${(project ? PROJECT_NEXT : NEXT_STATUS)[program.status].map(([to, label], i) =>
           `<button class="btn ${i === 0 ? "primary" : ""}" data-status="${to}">${label}</button>`).join("")}
-        <a class="btn" href="#/preview/new/${id}">${icons.eye} Preview As Learner</a>
-        ${program.status === "completed" ? `<button class="btn primary" data-archive>${icons.archive} Close &amp; Archive</button>` : ""}
-        <button class="btn" data-duplicate>Duplicate</button>
+        ${project ? "" : `<a class="btn" href="#/preview/new/${id}">${icons.eye} Preview As Learner</a>`}
+        ${program.status === "completed" && !project ? `<button class="btn primary" data-archive>${icons.archive} Close &amp; Archive</button>` : ""}
+        ${project ? "" : `<button class="btn" data-duplicate>Duplicate</button>`}
         ${canDelete ? `<button class="btn danger" data-delete>${icons.trash} Delete</button>` : ""}
       </div>
     </header>
     <nav class="tabs">
-      ${TABS.map(([k, label]) => `<a href="#/programs/${id}/${k}" class="${k === tab ? "active" : ""}">${label}</a>`).join("")}
+      ${tabList.map(([k, label]) => `<a href="#/programs/${id}/${k}" class="${k === tab ? "active" : ""}">${label}</a>`).join("")}
     </nav>
     <div data-task-nudge></div>
     <section id="tab"></section>`;
 
   main.querySelectorAll("[data-status]").forEach((b) =>
     b.addEventListener("click", () => changeStatus(program, b.dataset.status, b.textContent, reload)));
-  main.querySelector("[data-duplicate]").addEventListener("click", () => duplicateProgram(program, ctx.me));
+  main.querySelector("[data-duplicate]")?.addEventListener("click", () => duplicateProgram(program, ctx.me));
   main.querySelector("[data-archive]")?.addEventListener("click", () => closeAndArchive(program, reload));
   main.querySelector("[data-delete]")?.addEventListener("click", () => deleteProgram(program));
 
   const area = main.querySelector("#tab");
   const tabs = { details: detailsTab, welcome: welcomeTab, journey: journeyTab, learners: learnersTab, reviews: reviewsTab, tasks: tasksTab };
   // New programs: a nudge to list the team's tasks once
-  if (tab !== "tasks") {
+  if (tab !== "tasks" && !project) {
     sb.from("program_tasks").select("id", { count: "exact", head: true }).eq("program_id", id).then(({ count, error: err }) => {
       const box = main.querySelector("[data-task-nudge]");
       if (box && !err && count === 0) box.innerHTML = `<div class="notice info" style="margin-bottom:12px">Next: list this program's tasks and owners. <a href="#/programs/${id}/tasks"><b>Open Tasks</b></a></div>`;
@@ -110,7 +129,8 @@ export async function renderProgramEditor(main, ctx) {
 // =====================================================================
 async function changeStatus(program, to, label, reload) {
   let warning = "";
-  if (to === "live" || to === "scheduled") {
+  const project = isProject(program);
+  if (!project && (to === "live" || to === "scheduled")) {
     const [{ count: steps }, { count: learners }] = await Promise.all([
       sb.from("program_steps").select("id", { count: "exact", head: true }).eq("program_id", program.id),
       sb.from("enrollments").select("id", { count: "exact", head: true }).eq("program_id", program.id),
@@ -120,13 +140,13 @@ async function changeStatus(program, to, label, reload) {
   }
   openModal({
     title: `${label}?`,
-    intro: esc(STATUS_EFFECT[to]),
+    intro: esc((project ? PROJECT_EFFECT : STATUS_EFFECT)[to] ?? ""),
     body: warning,
     submitLabel: label,
     onSubmit: async () => {
       const { error } = await sb.from("programs").update({ status: to }).eq("id", program.id);
       if (error) throw error;
-      toast(`Program is now ${PROGRAM_STATUS[to].label.toLowerCase()}.`);
+      toast(`${project ? "Project" : "Program"} is now ${PROGRAM_STATUS[to].label.toLowerCase()}.`);
       reload();
     },
   });
@@ -425,6 +445,7 @@ const linkOf = (step) => (Array.isArray(step.step_links) ? step.step_links[0]?.u
 // Details
 // =====================================================================
 async function detailsTab(area, program, reload) {
+  const project = isProject(program);
   const { data: staff } = await sb.from("profiles").select("id, full_name")
     .in("role", ["admin", "ld"]).eq("is_active", true).order("full_name");
 
@@ -433,23 +454,23 @@ async function detailsTab(area, program, reload) {
       <div class="form-error" hidden></div>
       <label class="field span-2">Title <input class="input" name="title" value="${esc(program.title)}" required></label>
       <label class="field">Type
-        <select class="select" name="program_type">
-          ${Object.entries(PROGRAM_TYPE).map(([k, l]) => `<option value="${k}" ${k === program.program_type ? "selected" : ""}>${l}</option>`).join("")}
+        <select class="select" name="program_type" ${project ? "disabled" : ""}>
+          ${Object.entries(project ? { project: PROGRAM_TYPE.project } : TRAINING_TYPE).map(([k, l]) => `<option value="${k}" ${k === program.program_type ? "selected" : ""}>${l}</option>`).join("")}
         </select>
       </label>
-      <label class="field">Program Owner (Trainer)
+      <label class="field">${project ? "Project Owner" : "Program Owner (Trainer)"}
         <select class="select" name="owner_id">
           <option value="">Not Assigned</option>
           ${(staff ?? []).map((s) => `<option value="${s.id}" ${s.id === program.owner_id ? "selected" : ""}>${esc(s.full_name)}</option>`).join("")}
         </select>
       </label>
-      <label class="field span-2">Audience <input class="input" name="audience" value="${esc(program.audience ?? "")}" placeholder="e.g. Team leads, new hires"></label>
+      <label class="field span-2" ${project ? "hidden" : ""}>Audience <input class="input" name="audience" value="${esc(program.audience ?? "")}" placeholder="e.g. Team leads, new hires"></label>
       <label class="field">Start Date <input class="input" type="date" name="start_date" value="${esc(program.start_date ?? "")}"></label>
       <label class="field">Due Date <input class="input" type="date" name="due_date" value="${esc(program.due_date ?? "")}">
-        <span class="hint">The program deadline. You can extend it for individual learners on the Learners tab.</span></label>
-      <label class="field span-2">Overview <textarea class="input prose" name="overview" placeholder="What this program is about, in a few sentences.">${esc(program.overview ?? "")}</textarea></label>
+        <span class="hint">${project ? "The project deadline." : "The program deadline. You can extend it for individual learners on the Learners tab."}</span></label>
+      <label class="field span-2">Overview <textarea class="input prose" name="overview" placeholder="What this ${project ? "project" : "program"} is about, in a few sentences.">${esc(program.overview ?? "")}</textarea></label>
       <label class="field span-2">Objectives <textarea class="input prose" name="objectives" placeholder="One objective per line">${esc(program.objectives ?? "")}</textarea>
-        <span class="hint">One per line. Learners see them as a list.</span></label>
+        <span class="hint">One per line.${project ? "" : " Learners see them as a list."}</span></label>
       <div class="span-2 form-actions"><button class="btn primary" type="submit">Save Details</button></div>
     </form>`;
 
@@ -465,7 +486,7 @@ async function detailsTab(area, program, reload) {
     }
     const { error } = await sb.from("programs").update({
       title,
-      program_type: form.program_type.value,
+      program_type: project ? "project" : form.program_type.value,
       owner_id: form.owner_id.value || null,
       audience: form.audience.value.trim() || null,
       start_date: form.start_date.value || null,

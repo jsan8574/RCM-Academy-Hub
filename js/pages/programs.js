@@ -10,7 +10,7 @@ export async function renderPrograms(main, ctx) {
 
   main.innerHTML = `
     <header class="topbar">
-      <div><h1>Programs</h1><p>Create programs, build the learning journey and enroll learners.</p></div>
+      <div><h1>Programs</h1><p>Create programs, build the learning journey and enroll learners. Projects track tasks only.</p></div>
       <div class="top-actions"><button class="btn primary" data-new>${icons.plus} New Program</button></div>
     </header>
     <div class="toolbar">
@@ -69,15 +69,16 @@ export async function renderPrograms(main, ctx) {
           <tbody>${shown.map((p) => {
             const scores = avg[p.id] ?? [];
             const mean = scores.length ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : null;
+            const project = p.program_type === "project";
             return `
               <tr data-open="${p.id}" tabindex="0">
                 <td class="name"><strong>${esc(p.title)}</strong><span>${esc(p.audience ?? "")}</span></td>
                 <td>${esc(PROGRAM_TYPE[p.program_type])}</td>
                 <td>${statusPill(p.status)}</td>
                 <td>${p.start_date || p.due_date ? `${esc(fmtDate(p.start_date) || "–")} → ${esc(fmtDate(p.due_date) || "–")}` : '<span class="muted">Not Set</span>'}</td>
-                <td>${p.program_steps[0]?.count ?? 0}</td>
-                <td>${p.enrollments[0]?.count ?? 0}</td>
-                <td>${mean === null ? '<span class="muted">–</span>' : `<div class="meter"><i style="width:${mean}%"></i></div> ${mean}%`}</td>
+                <td>${project ? '<span class="muted">–</span>' : p.program_steps[0]?.count ?? 0}</td>
+                <td>${project ? '<span class="muted">–</span>' : p.enrollments[0]?.count ?? 0}</td>
+                <td>${mean === null || project ? '<span class="muted">–</span>' : `<div class="meter"><i style="width:${mean}%"></i></div> ${mean}%`}</td>
                 <td>${esc(p.owner?.full_name ?? "")}</td>
               </tr>`;
           }).join("")}</tbody>
@@ -97,7 +98,7 @@ export async function renderPrograms(main, ctx) {
   draw();
 
   function newProgram() {
-    openModal({
+    const { form } = openModal({
       title: "New Program",
       intro: "Start with the basics. You can add the learning journey and learners next.",
       body: `
@@ -106,8 +107,9 @@ export async function renderPrograms(main, ctx) {
           <select class="select" name="program_type">
             ${Object.entries(PROGRAM_TYPE).map(([k, l]) => `<option value="${k}">${l}</option>`).join("")}
           </select>
+          <span class="hint" data-type-hint></span>
         </label>
-        <label class="field">Audience <input class="input" name="audience" placeholder="e.g. Team leads, new hires"></label>
+        <label class="field" data-audience>Audience <input class="input" name="audience" placeholder="e.g. Team leads, new hires"></label>
         <div class="two">
           <label class="field">Start Date <input class="input" type="date" name="start_date"></label>
           <label class="field">Due Date <input class="input" type="date" name="due_date"></label>
@@ -115,19 +117,32 @@ export async function renderPrograms(main, ctx) {
       submitLabel: "Create Program",
       onSubmit: async (f) => {
         const title = f.title.value.trim();
-        if (!title) throw new Error("Please give the program a title.");
+        const project = f.program_type.value === "project";
+        if (!title) throw new Error(`Please give the ${project ? "project" : "program"} a title.`);
         const { data, error: err } = await sb.from("programs").insert({
           title,
           program_type: f.program_type.value,
-          audience: f.audience.value.trim() || null,
+          audience: project ? null : f.audience.value.trim() || null,
           start_date: f.start_date.value || null,
           due_date: f.due_date.value || null,
           owner_id: ctx.me.id,
         }).select("id").single();
         if (err) throw err;
-        toast("Program created.");
-        location.hash = `#/programs/${data.id}/journey`;
+        toast(project ? "Project created. Add its tasks." : "Program created.");
+        location.hash = `#/programs/${data.id}/${project ? "tasks" : "journey"}`;
       },
     });
+    // Projects: tasks only (no learners or learning journey)
+    const sync = () => {
+      const project = form.program_type.value === "project";
+      form.querySelector("[data-audience]").hidden = project;
+      form.querySelector("[data-type-hint]").textContent = project
+        ? "A task list with owners, due dates and hours. No learners, modules or enrolling." : "";
+      form.querySelector("[type=submit]").textContent = project ? "Create Project" : "Create Program";
+      const intro = form.closest(".modal")?.querySelector("header p, .modal-head p");
+      if (intro) intro.textContent = project ? "Start with the basics. You can add the tasks next." : "Start with the basics. You can add the learning journey and learners next.";
+    };
+    form.program_type.addEventListener("change", sync);
+    sync();
   }
 }

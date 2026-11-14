@@ -132,7 +132,10 @@ export const cleanMarket = (v) => {
     ?? (t.length <= 3 ? t.toUpperCase() : t.replace(/\b\w/g, (c) => c.toUpperCase()));
 };
 
-export const PROGRAM_TYPE = { self_paced: "Self-Paced", ilt: "ILT", blended: "Blended" };
+export const PROGRAM_TYPE = { self_paced: "Self-Paced", ilt: "ILT", blended: "Blended", project: "Project / Initiative" };
+// Training types (with learners); a "project" is a task list only
+export const TRAINING_TYPE = { self_paced: "Self-Paced", ilt: "ILT", blended: "Blended" };
+export const isProject = (p) => p?.program_type === "project";
 
 export const PROGRAM_STATUS = {
   draft:     { label: "Draft",     pill: "" },
