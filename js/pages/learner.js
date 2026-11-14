@@ -522,6 +522,7 @@ async function programPage(main, ctx, programId) {
     if (["join", "open-doc"].includes(btn.dataset.act) && mode.preview) return;
     if (btn.dataset.act === "survey-done") surveyDone(step, reload);
     if (btn.dataset.act === "upload") uploadFile(step, e, reload);
+    if (btn.dataset.act === "delete-upload") deleteUpload(step, e, reload);
     if (btn.dataset.act === "view-file") viewFile(btn.dataset.path);
     if (btn.dataset.act === "join") sb.rpc("start_step", { p_step: step.id }).then(() => {});
     // Documents are extras: the learner confirms they've read them (not counted toward completion)
@@ -605,10 +606,12 @@ function learnerStep(s, i, e) {
         <div class="step-flags">
           <span class="pill ${stateClass}">${esc(st.label)}</span>${score}${duePill(info)}
           ${s.step_type === "ilt_session" && open ? '<span class="muted small">Attendance is recorded by the Technical Training Team.</span>' : ""}
+          ${st.key === "done" && p?.override_by ? '<span class="muted small">Marked completed by the Technical Training Team.</span>' : ""}
         </div>
         ${latest ? `<div class="upload-line">
             ${latestSet.map((u) => `<button class="link-btn dark" data-act="view-file" data-path="${esc(u.file_path)}">${esc(u.file_name)}</button>`).join(" ")}
             <span class="muted">uploaded ${esc(fmtDate(latest.uploaded_at))}</span>
+            ${latest.status === "pending" && st.key === "review" ? `<button class="link-btn del-upload" data-act="delete-upload" data-step="${s.id}">${icons.trash} Delete And Upload Again</button>` : ""}
             ${latest.status === "rejected" && latest.review_comment ? `<div class="notice">Trainer: ${esc(latest.review_comment)}</div>` : ""}
           </div>` : ""}
       </div>
@@ -680,6 +683,25 @@ function surveyDone(step, reload) {
       const { error } = await sb.rpc("complete_step", { p_step: step.id });
       if (error) throw error;
       toast("Survey marked as completed.");
+      reload();
+    },
+  });
+}
+
+// Files still waiting for review can be deleted, then uploaded again
+function deleteUpload(step, e, reload) {
+  const set = (e.uploadsByStep[step.id] ?? []).filter((u) => u.status === "pending");
+  openModal({
+    title: `Delete ${set.length > 1 ? `${set.length} Files` : "Your File"}?`,
+    intro: `${set.map((u) => `<b>${esc(u.file_name)}</b>`).join(", ")} will be deleted and won't be reviewed. You can then upload again.`,
+    body: "",
+    submitLabel: "Delete",
+    danger: true,
+    onSubmit: async () => {
+      const { data: paths, error } = await sb.rpc("withdraw_upload", { p_step: step.id });
+      if (error) throw error;
+      if (paths?.length) await sb.storage.from(UPLOAD_BUCKET).remove(paths);
+      toast("Deleted. You can upload again now.");
       reload();
     },
   });

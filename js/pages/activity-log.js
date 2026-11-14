@@ -8,7 +8,7 @@ const AREA = {
   uploads: "Upload Review", enrollment_exclusions: "Learner Step Change", form_sections: "Test Section",
   assessment_questions: "Question", assessment_answer_keys: "Correct Answer", assessment_attempts: "Score Change",
   program_reviewers: "Reviewer", review_approvals: "Approval", review_comments: "Review Comment",
-  program_tasks: "Task", task_time: "Time Entry",
+  program_tasks: "Task", task_time: "Time Entry", step_progress: "Learner Step Status", assessment: "Assessment",
 };
 const ACTION = { insert: "Added", update: "Changed", delete: "Removed" };
 const RANGES = { 7: "Last 7 Days", 30: "Last 30 Days", 90: "Last 90 Days", 0: "All Time" };

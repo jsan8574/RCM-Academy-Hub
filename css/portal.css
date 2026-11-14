@@ -1052,3 +1052,16 @@ table.data td { padding: 8px 10px; }
 .thd-bar i b.over { background: #e6a532; }
 .thd-bar em { font-style: normal; font-size: 12px; color: var(--ink-2); white-space: nowrap; }
 @media (max-width: 860px) { .thd-two { grid-template-columns: 1fr; } }
+
+/* Learner: delete files still waiting for review */
+.upload-line .link-btn.del-upload { display: inline-flex; align-items: center; gap: 4px; color: var(--crit-ink); text-decoration: none; font-weight: 600; font-size: 12.5px; margin-left: 6px; }
+.upload-line .link-btn.del-upload:hover { color: var(--crit); }
+.upload-line .link-btn.del-upload svg { width: 14px; height: 14px; }
+
+/* Staff: step status per learner */
+.ss-list { display: grid; gap: 6px; }
+.ss-row { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.ss-row strong { display: block; font-size: 13.5px; }
+.ss-row .muted { font-size: 12px; }
+.ss-row .ss-why { display: block; font-size: 12px; color: var(--ink-3); margin-top: 2px; }
+@media (max-width: 600px) { .ss-row { grid-template-columns: 1fr; } }

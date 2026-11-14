@@ -943,6 +943,7 @@ async function learnersTab(area, program, reload) {
                 <td>${due ? esc(fmtDate(due)) : '<span class="muted">–</span>'} ${e.due_date_override ? '<span class="pill warn">Extended</span>' : ""}</td>
                 <td>${p?.last_activity ? esc(fmtDate(p.last_activity)) : ""}</td>
                 <td class="actions">
+                  <button class="btn sm" data-status="${e.id}">Step Status</button>
                   <button class="btn sm" data-steps="${e.id}">Customize Steps</button>
                   <a class="btn sm" href="#/preview/${e.learner_id}/${program.id}">View As Learner</a>
                   <button class="btn sm" data-extend="${e.id}">Deadline</button>
@@ -958,10 +959,94 @@ async function learnersTab(area, program, reload) {
     const ext = e.target.closest("[data-extend]");
     const rem = e.target.closest("[data-remove]");
     const cus = e.target.closest("[data-steps]");
+    const sts = e.target.closest("[data-status]");
+    if (sts) stepStatus(enrolled.find((x) => x.id === sts.dataset.status), steps ?? [], reload);
     if (cus) customizeSteps(enrolled.find((x) => x.id === cus.dataset.steps), steps ?? [], reload);
     if (ext) extendDeadline(program, enrolled.find((x) => x.id === ext.dataset.extend), reload);
     if (rem) removeEnrollment(enrolled.find((x) => x.id === rem.dataset.remove), reload);
   });
+}
+
+// Admin or a trainer marks a step Completed / Not Completed for one learner,
+// with a reason (kept on the step and in the Activity Log)
+const STEP_STATUS = {
+  completed: ["Completed", "good"], submitted: ["Waiting For Review", "prog"], rejected: ["Returned", "crit"],
+  in_progress: ["In Progress", "prog"], not_started: ["Not Started", ""],
+};
+const OVERRIDE_REASONS = [
+  "Completed Outside The Portal (Proof On File)",
+  "File Too Large To Upload (Proof Received Another Way)",
+  "Completed In Person",
+  "Other",
+];
+
+async function stepStatus(enrollment, steps, reload) {
+  const [{ data: progress, error }, { data: pending }] = await Promise.all([
+    sb.from("step_progress").select("step_id, status, completed_at, override_at, override_reason, overrider:profiles!step_progress_override_by_fkey(full_name)").eq("enrollment_id", enrollment.id),
+    sb.from("uploads").select("step_id").eq("enrollment_id", enrollment.id).eq("status", "pending"),
+  ]);
+  if (error) return toast(error.message, "err");
+  const byStep = Object.fromEntries((progress ?? []).map((p) => [p.step_id, p]));
+  const waiting = new Set((pending ?? []).map((u) => u.step_id));
+  const removed = new Set((enrollment.enrollment_exclusions ?? []).map((x) => x.step_id));
+  const mine = steps.filter((s) => !removed.has(s.id));
+
+  const { form } = openModal({
+    title: `Step Status: ${enrollment.learner.full_name}`,
+    intro: "Mark a step Completed when there's a good reason, for example it was done outside the portal or the file was too large to upload. The reason is saved and logged.",
+    wide: true,
+    body: mine.length ? `<div class="ss-list">${mine.map((s) => {
+      const p = byStep[s.id];
+      const key = p?.status === "completed" ? "completed" : waiting.has(s.id) ? "submitted" : p?.status ?? "not_started";
+      const [label, cls] = STEP_STATUS[key] ?? STEP_STATUS.not_started;
+      return `<div class="ss-row">
+        <div>
+          <strong>${s.position}. ${esc(s.title)}</strong>
+          <span class="muted">${esc(STEP_TYPE[s.step_type].short)}${s.is_required ? "" : " · Optional"}</span>
+          <span class="pill ${cls}">${label}</span>
+          ${p?.override_reason ? `<span class="ss-why">${esc(p.overrider?.full_name ?? "Staff")} on ${esc(fmtDate(p.override_at))}: “${esc(p.override_reason)}”</span>` : ""}
+        </div>
+        ${key === "completed"
+          ? `<button type="button" class="btn sm" data-set="${s.id}" data-done="0">Mark Not Completed</button>`
+          : `<button type="button" class="btn sm primary" data-set="${s.id}" data-done="1">${icons.check} Mark Completed</button>`}
+      </div>`;
+    }).join("")}</div>` : '<div class="empty"><div><strong>No Steps</strong>This learner has no steps.</div></div>',
+    submitLabel: "Close",
+    cancelLabel: "",
+  });
+  form.querySelector(".ss-list")?.addEventListener("click", (ev) => {
+    const b = ev.target.closest("[data-set]");
+    if (!b) return;
+    form.closest(".modal-backdrop").remove();
+    setStepStatus(enrollment, steps, mine.find((s) => s.id === b.dataset.set), b.dataset.done === "1", reload);
+  });
+}
+
+function setStepStatus(enrollment, steps, step, completed, reload) {
+  const today = new Date().toISOString().slice(0, 10);
+  const { form } = openModal({
+    title: `${completed ? "Mark Completed" : "Mark Not Completed"}: ${step.title}`,
+    intro: `For <b>${esc(enrollment.learner.full_name)}</b>. ${completed ? "This counts toward their completion straight away." : "They'll need to do this step again."}`,
+    body: `
+      <label class="field">Reason
+        <select class="select" name="why">${(completed ? OVERRIDE_REASONS : ["Marked Completed By Mistake", "Proof Not Accepted", "Other"]).map((r) => `<option>${esc(r)}</option>`).join("")}</select></label>
+      <label class="field">Details <input class="input" name="details" placeholder="e.g. Certificate emailed to the Trainer on 12 Nov"></label>
+      ${completed ? `<label class="field">Completed On <input class="input" type="date" name="day" value="${today}" max="${today}" style="max-width:200px"></label>` : ""}`,
+    submitLabel: completed ? "Mark Completed" : "Mark Not Completed",
+    onSubmit: async (f) => {
+      const details = f.details.value.trim();
+      if (f.why.value === "Other" && !details) throw new Error("Please add details for “Other”.");
+      const reason = f.why.value === "Other" ? details : details ? `${f.why.value}: ${details}` : f.why.value;
+      const { error } = await sb.rpc("override_step_status", {
+        p_enrollment: enrollment.id, p_step: step.id, p_completed: completed, p_reason: reason, p_date: completed ? f.day.value || null : null,
+      });
+      if (error) throw error;
+      toast(`${step.title}: marked ${completed ? "Completed" : "Not Completed"} for ${enrollment.learner.full_name}.`);
+      reload();
+      stepStatus(enrollment, steps, reload);
+    },
+  });
+  form.querySelector("[name=why]").focus();
 }
 
 // Choose which steps one learner must do (e.g. 1 of 3 modules). Removed steps
