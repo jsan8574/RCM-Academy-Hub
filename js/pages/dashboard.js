@@ -292,7 +292,7 @@ function compute(d) {
     { label: "Live Programs", value: programs.filter((p) => p.status === "live").length, hint: `${programs.length} in view` },
     { label: "Learners Enrolled", value: new Set(enrollments.map((e) => e.learner_id)).size, hint: `${enrollments.length} enrolment${enrollments.length === 1 ? "" : "s"}` },
     { label: "Average Completion", value: `${learners.length ? Math.round(learners.reduce((a, l) => a + l.pct, 0) / learners.length) : 0}%`, hint: "across all enrolments" },
-    { label: "Programs Completed", value: learners.filter((l) => l.status === "Completed").length, hint: `${learnersFinishedInPeriod} finished ${PERIODS[filters.period].toLowerCase()}` },
+    { label: "Learners Completed", value: learners.filter((l) => l.status === "Completed").length, hint: `${learnersFinishedInPeriod} finished ${PERIODS[filters.period].toLowerCase()}` },
     { label: "Steps Completed", value: completedInPeriod.length, hint: PERIODS[filters.period] },
     { label: "Average Assessment Score", value: attemptsInPeriod.length ? `${Math.round(attemptsInPeriod.reduce((a, t) => a + Number(t.percent), 0) / attemptsInPeriod.length)}%` : "–",
       hint: attemptsInPeriod.length ? `${Math.round((attemptsInPeriod.filter((t) => t.passed).length / attemptsInPeriod.length) * 100)}% pass rate, ${attemptsInPeriod.length} attempts` : `No attempts ${PERIODS[filters.period].toLowerCase()}` },
@@ -678,7 +678,7 @@ function drawDashboard(box, v) {
         <div class="hero-stats">
           <div><b>${s.live}</b><span>Live Programs</span></div>
           <div><b>${s.learners}</b><span>Learners Enrolled</span></div>
-          <div><b>${s.finished}</b><span>Programs Completed</span></div>
+          <div><b>${s.finished}</b><span>Learners Completed</span></div>
           <div><b>${s.fb.rating ?? "–"}</b><span>Average Rating</span></div>
         </div>
       </div>
