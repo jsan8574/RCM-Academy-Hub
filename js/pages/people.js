@@ -1,7 +1,7 @@
 // People: create accounts, reset passwords, change email / role, deactivate, delete.
 // Admin manages everyone; Trainer manages learners only (also enforced on the server).
 import { sb, manageAccount } from "../supabase.js";
-import { esc, toast, openModal, generatePassword, copyText, downloadCsv, ROLE_LABEL, icons, MARKETS, cleanMarket, LIBS, loadScript } from "../ui.js";
+import { brand, esc, toast, openModal, generatePassword, copyText, downloadCsv, safeName, ROLE_LABEL, icons, MARKETS, cleanMarket, LIBS, loadScript } from "../ui.js";
 
 const filters = { q: "", role: "", status: "active", market: "", department: "" };
 let people = [];
@@ -206,7 +206,7 @@ function passwordField(label = "Temporary password") {
 // Sent by the "Welcome Emails" Power Automate flow from the team mailbox, usually within minutes
 function emailBox() {
   return `<label class="check"><input type="checkbox" name="send_email" checked> Email The Sign-In Details To Them
-    <span class="hint">(from the Technical Training mailbox, within a few minutes)</span></label>`;
+    <span class="hint">(from the ${brand.team} mailbox, within about 30 minutes)</span></label>`;
 }
 
 function wireGenerate(form) {
@@ -214,7 +214,7 @@ function wireGenerate(form) {
 }
 
 function showCredentials(person, password, emailed = false) {
-  const text = `RCM Academy Hub\n${portalUrl()}\n\nEmail: ${person.email}\nTemporary password: ${password}\n\nYou'll be asked to set your own password when you first sign in.`;
+  const text = `${brand.platform}\n${portalUrl()}\n\nEmail: ${person.email}\nTemporary password: ${password}\n\nYou'll be asked to set your own password when you first sign in.`;
   const { form } = openModal({
     title: emailed ? "Sign-In Details Are On Their Way" : "Share These Sign-In Details",
     intro: emailed
@@ -385,13 +385,13 @@ function addMany(main) {
 async function downloadTemplate() {
   await loadScript(LIBS.xlsx);
   const X = window.XLSX;
-  const ws = X.utils.aoa_to_sheet([BULK_COLUMNS, ["Juan Dela Cruz", "juan.delacruz@healthreconconnect.com", "Operations", "Team Lead", "Philippines", "Maria Santos", "maria.santos@healthreconconnect.com"]]);
+  const ws = X.utils.aoa_to_sheet([BULK_COLUMNS, ["Juan Dela Cruz", "juan.delacruz@company.com", "Operations", "Team Lead", "Philippines", "Maria Santos", "maria.santos@company.com"]]);
   ws["!cols"] = [26, 36, 22, 22, 14, 24, 36].map((w) => ({ wch: w }));
   const lists = X.utils.aoa_to_sheet([["Markets"], ...MARKETS.map((m) => [m]), ["(or type another market)"]]);
   const wb = X.utils.book_new();
   X.utils.book_append_sheet(wb, ws, "People");
   X.utils.book_append_sheet(wb, lists, "Markets");
-  X.writeFile(wb, "RCM Academy Hub People Template.xlsx");
+  X.writeFile(wb, `${brand.platform} People Template.xlsx`);
 }
 
 function showBulkResults(results) {
@@ -412,7 +412,7 @@ function showBulkResults(results) {
     cancelLabel: "",
   });
   form.querySelector("[data-download]")?.addEventListener("click", () => {
-    downloadCsv(`growthpoint-sign-in-details-${new Date().toLocaleDateString("en-CA")}.csv`, [
+    downloadCsv(`${safeName(brand.platform)} Sign-In Details ${new Date().toLocaleDateString("en-CA")}.csv`, [
       ["Full Name", "Email", "Temporary Password", "Link", "Department", "Designation", "Market", "Reporting Manager", "Manager Email"],
       ...created.map((r) => [r.full_name, r.email, r.password, portalUrl(), r.department, r.designation, r.market, r.manager, r.manager_email]),
     ]);

@@ -3,7 +3,7 @@
 // timer, open/close dates, attempts, shuffling, and Excel template import.
 //   #/programs/<program>/form/<step>
 import { sb } from "../supabase.js";
-import {
+import { brand,
   esc, toast, openModal, icons, toLocalInput, fromLocalInput, QTYPE, LIKERT, LIBS, loadScript,
 } from "../ui.js";
 
@@ -73,7 +73,7 @@ export async function renderFormBuilder(main, program, stepId) {
       <div>
         <a class="back-link" href="${back}">${icons.back} ${esc(program.title)}</a>
         <h1>${isQuiz ? "Build Assessment" : "Build Survey"}: ${esc(step.title)}</h1>
-        <p>${isQuiz ? "Add sections and questions, mark the correct answers and set the points." : "Add sections and questions. Learners answer inside RCM Academy Hub."}</p>
+        <p>${isQuiz ? "Add sections and questions, mark the correct answers and set the points." : `Add sections and questions. Learners answer inside ${brand.platform}.`}</p>
       </div>
       <div class="top-actions">
         <button class="btn sm subtle" data-template>${icons.download} Download Template</button>

@@ -4,7 +4,7 @@
 //   #/messages            list
 //   #/messages/<thread>   one conversation
 import { sb } from "../supabase.js";
-import { esc, toast, openModal, icons, fmtDateTime } from "../ui.js";
+import { team, esc, toast, openModal, icons, fmtDateTime } from "../ui.js";
 
 const filters = { status: "open", q: "" };
 
@@ -20,8 +20,8 @@ export async function newMessage(me, programId = null) {
   const { data: enrolled } = await sb.from("enrollments").select("program:programs(id, title)").eq("learner_id", me.id);
   const programs = (enrolled ?? []).map((e) => e.program).filter(Boolean);
   openModal({
-    title: "Message The Technical Training Team",
-    intro: "Ask a question or report a problem. The Technical Training Team will reply here.",
+    title: `Message The ${team()}`,
+    intro: `Ask a question or report a problem. The ${team()} will reply here.`,
     body: `
       <label class="field">About
         <select class="select" name="program">
@@ -42,7 +42,7 @@ export async function newMessage(me, programId = null) {
       if (error) throw error;
       const { error: msgErr } = await sb.from("thread_messages").insert({ thread_id: thread.id, body });
       if (msgErr) throw msgErr;
-      toast("Message sent to the Technical Training Team.");
+      toast(`Message sent to the ${team()}.`);
       location.hash = `#/messages/${thread.id}`;
     },
   });
@@ -52,7 +52,7 @@ async function listPage(main, { me }) {
   const staff = isStaff(me);
   main.innerHTML = `
     <header class="topbar">
-      <div><h1>Messages</h1><p>${staff ? "Questions and requests from learners." : "Your conversations with the Technical Training Team."}</p></div>
+      <div><h1>Messages</h1><p>${staff ? "Questions and requests from learners." : `Your conversations with the ${team()}.`}</p></div>
       ${staff ? "" : `<div class="top-actions"><button class="btn primary" data-new>${icons.plus} New Message</button></div>`}
     </header>
     ${staff ? `
@@ -88,7 +88,7 @@ async function listPage(main, { me }) {
     if (!shown.length) {
       list.innerHTML = staff
         ? '<div class="empty"><div><strong>No Messages Here</strong>New questions from learners will appear here.</div></div>'
-        : '<div class="empty"><div><strong>No Messages Yet</strong>Use <b>New Message</b> to ask the Technical Training Team a question.</div></div>';
+        : `<div class="empty"><div><strong>No Messages Yet</strong>Use <b>New Message</b> to ask the ${team()} a question.</div></div>`;
       return;
     }
     list.innerHTML = `<div class="thread-list">${shown.map((t) => `

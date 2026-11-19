@@ -8,7 +8,7 @@
 //   #/preview/new/<program>/...          as a new learner (welcome steps treated as done)
 //   #/preview/<learner id>/<program>/... as an enrolled learner, with their real progress
 import { sb } from "../supabase.js";
-import { esc, toast, openModal, icons, stepIcon, fmtDate, fmtDateTime, PROGRAM_TYPE, STEP_TYPE, LIKERT } from "../ui.js";
+import { brand, team, esc, toast, openModal, icons, stepIcon, fmtDate, fmtDateTime, PROGRAM_TYPE, STEP_TYPE, LIKERT } from "../ui.js";
 import { newMessage } from "./messages.js";
 import { startSecureTest, enterFullScreen, secureRulesHtml, MAX_EXITS } from "../secure-test.js";
 
@@ -230,7 +230,7 @@ async function dashboard(main) {
     return;
   }
   if (!list.length) {
-    box.innerHTML = '<div class="empty"><div><strong>No Programs Yet</strong>Programs will appear here once the Technical Training Team enrolls you.</div></div>';
+    box.innerHTML = `<div class="empty"><div><strong>No Programs Yet</strong>Programs will appear here once the ${team()} enrolls you.</div></div>`;
     return;
   }
 
@@ -359,7 +359,7 @@ async function programPage(main, ctx, programId) {
     ${backLink("back-link page-back reveal")}
 
     ${p.status === "draft" ? '<div class="notice info" style="margin-top:10px">This program is a draft. Learners can\'t see it until it\'s scheduled or live.</div>' : ""}
-    ${p.status === "on_hold" ? '<div class="notice" style="margin-top:10px">This program is on hold. Steps are paused until the Technical Training Team resumes it.</div>' : ""}
+    ${p.status === "on_hold" ? `<div class="notice" style="margin-top:10px">This program is on hold. Steps are paused until the ${team()} resumes it.</div>` : ""}
     ${p.status === "scheduled" ? `<div class="notice info" style="margin-top:10px">This program starts ${p.start_date ? esc(fmtDate(p.start_date)) : "soon"}. Steps open once it begins.</div>` : ""}
 
     <section class="hero reveal" style="--i:1">
@@ -379,7 +379,7 @@ async function programPage(main, ctx, programId) {
           </div>
           <div class="hero-actions">
             <button class="btn light" data-cta>${esc(cta)} →</button>
-            <button class="btn glass" data-message>${icons.messages} Message Technical Training</button>
+            <button class="btn glass" data-message>${icons.messages} Message ${brand.team}</button>
           </div>
         </div>
         ${p.welcome_video_path ? `
@@ -396,7 +396,7 @@ async function programPage(main, ctx, programId) {
       ${letter.length ? `
         <div class="letter">
           ${letter.map((l) => `<p>${esc(l)}</p>`).join("")}
-          <div class="sign"><span class="mark">${icons.brand}</span> The Technical Training Team</div>
+          <div class="sign"><span class="mark">${icons.brand}</span> The ${team()}</div>
         </div>` : ""}
     </section>
 
@@ -442,7 +442,7 @@ async function programPage(main, ctx, programId) {
     <section class="reveal" style="--i:5" data-journey>
       <h2 class="section-title" style="margin-top:22px">Learning Journey</h2>
       ${e.steps.length ? `<ol class="steps learner">${e.steps.map((s, i) => learnerStep(s, i, e)).join("")}</ol>`
-        : '<div class="empty"><div>The Technical Training Team hasn\'t added any steps yet.</div></div>'}
+        : `<div class="empty"><div>The ${team()} hasn't added any steps yet.</div></div>`}
     </section>
   </div>`;
   const root = main.querySelector("[data-root]");
@@ -486,9 +486,9 @@ async function programPage(main, ctx, programId) {
       const box = panel.querySelector(".remark-box");
       if (!panel.classList.contains("open")) {
         box.innerHTML = `
-          <p>Your remark about <b>${esc(about)}</b> goes straight to the Technical Training Team's inbox. You'll see their reply in Messages.</p>
+          <p>Your remark about <b>${esc(about)}</b> goes straight to the ${team()}'s inbox. You'll see their reply in Messages.</p>
           <textarea class="input prose short" placeholder="Share a question, feedback or a problem…"></textarea>
-          <div class="row"><button type="button" class="btn" data-remark-cancel>Cancel</button><button type="button" class="btn primary" data-remark-send="${esc(key)}">Send To Technical Training</button></div>`;
+          <div class="row"><button type="button" class="btn" data-remark-cancel>Cancel</button><button type="button" class="btn primary" data-remark-send="${esc(key)}">Send To ${brand.team}</button></div>`;
         setTimeout(() => box.querySelector("textarea")?.focus(), 300);
       }
       panel.classList.toggle("open");
@@ -504,8 +504,8 @@ async function programPage(main, ctx, programId) {
       send.disabled = true;
       try {
         await sendRemark(ctx.me, p.id, about, text);
-        box.innerHTML = `<div class="remark-sent">${icons.check} Sent to the Technical Training Team. You'll see their reply in Messages.</div>`;
-        toast("Remark sent to the Technical Training Team.");
+        box.innerHTML = `<div class="remark-sent">${icons.check} Sent to the ${team()}. You'll see their reply in Messages.</div>`;
+        toast(`Remark sent to the ${team()}.`);
         setTimeout(() => box.closest(".remark")?.classList.remove("open"), 2600);
       } catch (err) {
         toast(err.message, "err");
@@ -605,8 +605,8 @@ function learnerStep(s, i, e) {
         ${s.description && st.key !== "locked" ? `<div class="step-desc">${esc(s.description)}</div>` : ""}
         <div class="step-flags">
           <span class="pill ${stateClass}">${esc(st.label)}</span>${score}${duePill(info)}${s.standard_minutes && st.key !== "done" ? `<span class="pill">About ${s.standard_minutes >= 60 ? `${Math.floor(s.standard_minutes / 60)}h${s.standard_minutes % 60 ? ` ${s.standard_minutes % 60}m` : ""}` : `${s.standard_minutes}m`}</span>` : ""}
-          ${s.step_type === "ilt_session" && open ? '<span class="muted small">Attendance is recorded by the Technical Training Team.</span>' : ""}
-          ${st.key === "done" && p?.override_by ? '<span class="muted small">Marked completed by the Technical Training Team.</span>' : ""}
+          ${s.step_type === "ilt_session" && open ? `<span class="muted small">Attendance is recorded by the ${team()}.</span>` : ""}
+          ${st.key === "done" && p?.override_by ? `<span class="muted small">Marked completed by the ${team()}.</span>` : ""}
         </div>
         ${latest ? `<div class="upload-line">
             ${latestSet.map((u) => `<button class="link-btn dark" data-act="view-file" data-path="${esc(u.file_path)}">${esc(u.file_name)}</button>`).join(" ")}
@@ -714,7 +714,7 @@ function uploadFile(step, e, reload) {
   const { form } = openModal({
     title: `Upload: ${step.title}`,
     intro: step.description ? esc(step.description)
-      : `Upload ${many ? `up to ${max} files` : "your file"}: a PDF, or a screenshot or photo (PNG or JPG). The Technical Training Team will check ${many ? "them" : "it"} before ${many ? "they count" : "it counts"} toward your completion.`,
+      : `Upload ${many ? `up to ${max} files` : "your file"}: a PDF, or a screenshot or photo (PNG or JPG). The ${team()} will check ${many ? "them" : "it"} before ${many ? "they count" : "it counts"} toward your completion.`,
     body: `
       <label class="dropzone">
         ${icons.upload}
@@ -754,7 +754,7 @@ function uploadFile(step, e, reload) {
         if (rows.length) await sb.storage.from(UPLOAD_BUCKET).remove(rows.map((r) => r.file_path));
         throw err;
       }
-      toast(`Uploaded${files.length > 1 ? ` ${files.length} files` : ""}. The Technical Training Team will review ${files.length > 1 ? "them" : "it"}.`);
+      toast(`Uploaded${files.length > 1 ? ` ${files.length} files` : ""}. The ${team()} will review ${files.length > 1 ? "them" : "it"}.`);
       reload();
     },
   });
@@ -1101,7 +1101,7 @@ async function assessmentPage(main, ctx, programId, stepId) {
   if (passed) status = `<div class="result good"><h2>You Passed 🎉</h2><p>Your best score: <b>${best}%</b></p></div>`;
   else if (notOpen) status = `<div class="notice info">This assessment opens ${esc(fmtDateTime(step.unlock_at))}.</div>`;
   else if (closed) status = `<div class="notice">This assessment closed on ${esc(fmtDateTime(step.close_at))}.${best != null ? ` Your best score: <b>${best}%</b>.` : ""}</div>`;
-  else if (left === 0 && !open) status = `<div class="notice">You've used all your attempts.${best != null ? ` Your best score: <b>${best}%</b>.` : ""} Contact the Technical Training Team if you need help.</div>`;
+  else if (left === 0 && !open) status = `<div class="notice">You've used all your attempts.${best != null ? ` Your best score: <b>${best}%</b>.` : ""} Contact the ${team()} if you need help.</div>`;
   else if (!questions.length) status = '<div class="notice info">This assessment isn\'t ready yet. Please check back later.</div>';
 
   main.innerHTML = `
@@ -1312,7 +1312,7 @@ async function surveyPage(main, ctx, programId, stepId) {
   const now = Date.now();
   const thanks = (msg) => `${formHeader(back, step.title)}
     <div class="card thanks"><div class="thanks-icon">${icons.check}</div><h2>${esc(msg)}</h2>
-      <p class="muted">Your answers have been sent to the Technical Training Team.</p><a class="btn primary" href="${back}">Back To Program</a></div>`;
+      <p class="muted">Your answers have been sent to the ${team()}.</p><a class="btn primary" href="${back}">Back To Program</a></div>`;
 
   if (progress?.status === "completed") { main.innerHTML = thanks("You've Answered This Survey. Thank You!"); return; }
   let blocked = "";
@@ -1324,12 +1324,12 @@ async function surveyPage(main, ctx, programId, stepId) {
   const identity = {
     choose: `<div class="card identity" role="group" aria-labelledby="share-title">
         <div class="identity-title" id="share-title">Share Your Name? <span class="req">*</span></div>
-        <label class="id-opt"><input type="radio" name="share" value="yes"><span><b>Share My Name</b><span class="muted small">The Technical Training Team sees your name with your answers.</span></span></label>
-        <label class="id-opt"><input type="radio" name="share" value="no"><span><b>Stay Anonymous</b><span class="muted small">The Technical Training Team sees your answers without your name.</span></span></label>
+        <label class="id-opt"><input type="radio" name="share" value="yes"><span><b>Share My Name</b><span class="muted small">The ${team()} sees your name with your answers.</span></span></label>
+        <label class="id-opt"><input type="radio" name="share" value="no"><span><b>Stay Anonymous</b><span class="muted small">The ${team()} sees your answers without your name.</span></span></label>
         <div class="q-error" hidden>Please choose one.</div>
       </div>`,
     anonymous: '<div class="notice info">This survey is anonymous. Your name isn\'t shared with your answers.</div>',
-    named: '<div class="notice info">Your name is shared with the Technical Training Team along with your answers.</div>',
+    named: `<div class="notice info">Your name is shared with the ${team()} along with your answers.</div>`,
   }[step.identity_mode ?? "choose"];
 
   main.innerHTML = `

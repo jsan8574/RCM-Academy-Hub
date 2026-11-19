@@ -119,6 +119,16 @@ export const safeName = (s) => String(s ?? "").replace(/[\\/:*?"<>|]+/g, "-").re
 
 export const ROLE_LABEL = { admin: "Admin", ld: "Trainer", learner: "Learner", leader: "Leader" };
 
+// Organization wording, set by Admin in Organization Settings (update 21).
+// These defaults show until the saved names load.
+export const brand = { platform: "RCM Academy Hub", org: "HRC", team: "Technical Training" };
+// "Technical Training" → "Technical Training Team" (no doubled word when the name already ends in Team)
+export const team = () => (/\bteam$/i.test(brand.team) ? brand.team : `${brand.team} Team`);
+const BRAND_KEY = { platform_name: "platform", org_name: "org", team_name: "team" };
+export function applyBrand(rows) {
+  for (const r of rows ?? []) if (BRAND_KEY[r.key] && r.value) brand[BRAND_KEY[r.key]] = r.value;
+}
+
 // Learner details used for reporting
 export const MARKETS = ["US", "Sri Lanka", "India", "Philippines"];
 export const DETAIL_LABEL = { department: "Department", designation: "Designation", market: "Market", manager: "Reporting Manager" };
@@ -200,7 +210,7 @@ export const icons = {
   approve: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 12l2 2 4-4"/><path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z"/></svg>',
   comment: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16v11H9l-5 4z"/></svg>',
   link: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg>',
-  // Open book with a spark of insight: RCM Academy Hub's mark
+  // Open book with a spark of insight: the platform's mark
   brand: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true"><path d="M12 11c-2-1.4-5-1.9-8.5-1.4v10c3.5-.5 6.5 0 8.5 1.4 2-1.4 5-1.9 8.5-1.4v-10c-3.5-.5-6.5 0-8.5 1.4z"/><path d="M12 11v10"/><path d="M12 2.5l.9 2.1 2.1.9-2.1.9-.9 2.1-.9-2.1-2.1-.9 2.1-.9z" fill="currentColor" stroke-width="1"/></svg>',
   home: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg>',
   people: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><circle cx="17" cy="9" r="2.5"/><path d="M16 14.2a5 5 0 0 1 5.5 4.8"/></svg>',

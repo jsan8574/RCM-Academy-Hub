@@ -1,6 +1,6 @@
 // RCM Academy Hub — sign-in, first-time password, and the page shell
 import { sb } from "./supabase.js";
-import { esc, toast, openModal, icons, ROLE_LABEL } from "./ui.js";
+import { brand, team, applyBrand, esc, toast, openModal, icons, ROLE_LABEL } from "./ui.js";
 import { renderPeople } from "./pages/people.js";
 import { renderPrograms } from "./pages/programs.js";
 import { renderLearning, renderPreview } from "./pages/learner.js";
@@ -38,9 +38,23 @@ const allowedPages = () => Object.entries(PAGES).filter(([, p]) => p.roles.inclu
 // Start-up
 // ---------------------------------------------------------------------
 async function start() {
+  await loadBrand();
   const { data } = await sb.auth.getSession();
   if (!data.session) return showSignIn();
   await enter();
+}
+
+// Organization names (Organization Settings). Last-known names show at once; the saved ones replace them.
+async function loadBrand() {
+  try { applyBrand(JSON.parse(localStorage.getItem("brand") || "[]")); } catch { /* no saved copy */ }
+  try {
+    const { data, error } = await sb.from("app_settings").select("key, value");
+    if (!error && data) {
+      applyBrand(data);
+      try { localStorage.setItem("brand", JSON.stringify(data)); } catch { /* storage blocked */ }
+    }
+  } catch { /* keep the defaults */ }
+  document.title = brand.platform;
 }
 
 async function enter() {
@@ -50,7 +64,7 @@ async function enter() {
   const { data: profile, error } = await sb.from("profiles").select("*").eq("user_id", user.id).maybeSingle();
   if (error || !profile || !profile.is_active) {
     await sb.auth.signOut();
-    return showSignIn("Your account isn't set up for RCM Academy Hub, or it has been deactivated. Please contact the Technical Training Team.");
+    return showSignIn(`Your account isn't set up for ${brand.platform}, or it has been deactivated. Please contact the ${team()}.`);
   }
   me = profile;
   if (me.must_change_password) return showNewPassword();
@@ -76,8 +90,8 @@ function showSignIn(message = "") {
     <div class="auth">
       <div class="auth-card">
         <div class="brand-mark">${icons.brand}</div>
-        <h1>RCM Academy Hub</h1>
-        <p class="lead">Sign in with the email and password the Technical Training Team gave you.</p>
+        <h1>${brand.platform}</h1>
+        <p class="lead">Sign in with the email and password the ${team()} gave you.</p>
         <form id="signin" novalidate>
           <div class="form-error" ${message ? "" : "hidden"}>${esc(message)}</div>
           <label class="field">Email
@@ -88,7 +102,7 @@ function showSignIn(message = "") {
           </label>
           <button class="btn primary" type="submit">Sign In</button>
         </form>
-        <p class="auth-note">Forgot your password? Ask the Technical Training Team to reset it.</p>
+        <p class="auth-note">Forgot your password? Ask the ${team()} to reset it.</p>
       </div>
     </div>`;
 
@@ -110,7 +124,7 @@ function showSignIn(message = "") {
       btn.disabled = false;
       btn.textContent = "Sign In";
       const msg = /banned/i.test(error.message)
-        ? "This account has been deactivated. Please contact the Technical Training Team."
+        ? `This account has been deactivated. Please contact the ${team()}.`
         : /invalid login/i.test(error.message)
           ? "Email or password is incorrect."
           : error.message;
@@ -205,7 +219,7 @@ function showApp() {
       <aside class="sidebar">
         <div class="brand">
           <div class="brand-mark">${icons.brand}</div>
-          <div><strong>RCM Academy Hub</strong><span>${esc(ROLE_LABEL[me.role])}</span></div>
+          <div><strong>${brand.platform}</strong><span>${esc(ROLE_LABEL[me.role])}</span></div>
         </div>
         <nav class="nav">${nav}</nav>
         <div class="sidebar-foot">
@@ -213,6 +227,7 @@ function showApp() {
           ${esc(me.email)}
           <div class="links">
             <button class="link-btn" data-changepass>Change Password</button>
+            ${me.role === "admin" ? '<button class="link-btn" data-orgsettings>Organization Settings</button>' : ""}
             <button class="link-btn" data-signout>Sign Out</button>
           </div>
         </div>
@@ -222,6 +237,7 @@ function showApp() {
 
   root.querySelector("[data-signout]").addEventListener("click", () => sb.auth.signOut());
   root.querySelector("[data-changepass]").addEventListener("click", changePassword);
+  root.querySelector("[data-orgsettings]")?.addEventListener("click", orgSettings);
   route();
 }
 
@@ -238,7 +254,7 @@ function route() {
   if (!found) history.replaceState(null, "", `#/${key}`);
 
   root.querySelectorAll(".nav a").forEach((a) => a.classList.toggle("active", a.dataset.page === (page.navAs ?? key)));
-  document.title = `${page.title} · RCM Academy Hub`;
+  document.title = `${page.title} · ${brand.platform}`;
   page.render(main, { me, params: found ? params.map(decodeURIComponent) : [] });
   refreshBadges();
 }
@@ -272,3 +288,32 @@ function changePassword() {
 }
 
 start();
+
+// ---------------------------------------------------------------------
+// Organization Settings (Admin): the names shown everywhere
+// ---------------------------------------------------------------------
+const BAD_NAME = /[<>"`\\]/;
+function orgSettings() {
+  openModal({
+    title: "Organization Settings",
+    intro: "These names show on the sign-in page, every screen, the emails and the reports.",
+    body: `
+      <label class="field">Platform Name <input class="input" name="platform" maxlength="60" value="${esc(brand.platform)}" required>
+        <span class="hint">For example, RCM Academy Hub.</span></label>
+      <label class="field">Organization Name <input class="input" name="org" maxlength="60" value="${esc(brand.org)}" required>
+        <span class="hint">For example, HRC.</span></label>
+      <label class="field">Department / Team Name <input class="input" name="team" maxlength="60" value="${esc(brand.team)}" required>
+        <span class="hint">For example, Technical Training. Learners see it as "the Technical Training Team".</span></label>`,
+    onSubmit: async (f) => {
+      const v = { platform: f.platform.value.trim(), org: f.org.value.trim(), team: f.team.value.trim() };
+      if (!v.platform || !v.org || !v.team) throw new Error("Please fill in all three names.");
+      if (Object.values(v).some((x) => BAD_NAME.test(x))) throw new Error('Names can\'t contain < > " ` or \\.');
+      const { error } = await sb.rpc("save_app_settings", { p_platform: v.platform, p_org: v.org, p_team: v.team });
+      if (error) throw new Error(/function|schema cache/i.test(error.message) ? "Run database update 21 first." : error.message);
+      Object.assign(brand, v);
+      try { localStorage.setItem("brand", JSON.stringify([{ key: "platform_name", value: v.platform }, { key: "org_name", value: v.org }, { key: "team_name", value: v.team }])); } catch { /* storage blocked */ }
+      toast("Organization settings saved.");
+      showApp();
+    },
+  });
+}

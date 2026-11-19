@@ -1,7 +1,7 @@
 // Trainer Dashboard: overall, by program, by learner and by step, for a chosen period,
 // with Excel and PDF exports of exactly what's on screen.
 import { sb } from "../supabase.js";
-import {
+import { brand,
   esc, toast, icons, fmtDate, statusPill, PROGRAM_TYPE, TRAINING_TYPE, PROGRAM_STATUS, STEP_TYPE,
   LIBS, loadScript, safeName,
   learningMinutes,
@@ -971,7 +971,7 @@ async function exportExcel(v, data, me) {
   };
 
   sheet("Summary", [
-    ["RCM Academy Hub Learning Report"],
+    [`${brand.platform} Learning Report`],
     ["Generated", new Date(), "By", me.full_name],
     [],
     ...filterSummary(data),
@@ -1035,7 +1035,7 @@ async function exportExcel(v, data, me) {
     Uploaded: xDate(u.uploaded), "Reviewed By": u.reviewedBy, Reviewed: xDate(u.reviewed), Comment: u.comment,
   })) : [["No uploads yet."]], [26, 32, 32, 30, 30, 18, 18, 20, 18, 40]);
 
-  X.writeFile(wb, `RCM Academy Hub Learning Report ${today()}.xlsx`);
+  X.writeFile(wb, `${brand.platform} Learning Report ${today()}.xlsx`);
   toast("Excel file downloaded.");
 }
 
@@ -1068,7 +1068,7 @@ async function exportPdf(v, data, me) {
   doc.setTextColor(255, 255, 255);
   doc.setFont("helvetica", "bold");
   doc.setFontSize(22);
-  doc.text("RCM Academy Hub Learning Report", M, 52);
+  doc.text(`${brand.platform} Learning Report`, M, 52);
   doc.setFont("helvetica", "normal");
   doc.setFontSize(11);
   doc.setTextColor(200, 220, 232);
@@ -1237,10 +1237,10 @@ async function exportPdf(v, data, me) {
     doc.setFont("helvetica", "normal");
     doc.setFontSize(7.5);
     doc.setTextColor(...MUTED);
-    doc.text("RCM Academy Hub  |  HRC Technical Training  |  Confidential: For Internal Use", M, H - 20);
+    doc.text(`${brand.platform}  |  ${brand.org} ${brand.team}  |  Confidential: For Internal Use`, M, H - 20);
     doc.text(`Page ${i} of ${pages}`, W - M, H - 20, { align: "right" });
   }
 
-  doc.save(`${safeName(`RCM Academy Hub Learning Report - ${scope} - ${today()}`)}.pdf`);
+  doc.save(`${safeName(`${brand.platform} Learning Report - ${scope} - ${today()}`)}.pdf`);
   toast("PDF report downloaded.");
 }

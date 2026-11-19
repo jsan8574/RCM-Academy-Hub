@@ -1,6 +1,6 @@
 // One program: Details · Welcome & reading · Learning journey · Learners, plus status changes.
 import { sb } from "../supabase.js";
-import {
+import { brand, team,
   esc, toast, openModal, icons, stepIcon, statusPill, fmtDate, fmtDateTime, toLocalInput, fromLocalInput,
   PROGRAM_TYPE, TRAINING_TYPE, isProject, PROGRAM_STATUS, STEP_TYPE, LIBS, loadScript, downloadBlob, safeName, learningMinutes,
 } from "../ui.js";
@@ -262,7 +262,7 @@ async function closeAndArchive(program, reload) {
 
   const { form } = openModal({
     title: `Close & Archive “${program.title}”`,
-    intro: "Download everything first. Archiving then deletes the uploaded files and the welcome video to free storage. Names, progress, scores and dates stay in RCM Academy Hub for the dashboard.",
+    intro: `Download everything first. Archiving then deletes the uploaded files and the welcome video to free storage. Names, progress, scores and dates stay in ${brand.platform} for the dashboard.`,
     wide: true,
     body: `
       <ol class="wizard">
@@ -542,7 +542,7 @@ async function welcomeTab(area, program, reload) {
       <form class="card stack" novalidate>
         <div class="form-error" hidden></div>
         <label class="field">Welcome Message
-          <textarea class="input prose" name="welcome_message" placeholder="A short welcome and orientation from the Technical Training Team.">${esc(program.welcome_message ?? "")}</textarea>
+          <textarea class="input prose" name="welcome_message" placeholder="A short welcome and orientation from the ${team()}.">${esc(program.welcome_message ?? "")}</textarea>
           <span class="hint">Shown at the top of the program, with the video.</span>
         </label>
         <label class="field">Required Reading
@@ -796,7 +796,7 @@ function editStep(program, step, steps, reload) {
       </label>
       <label class="field" data-for="module upload">Standard Duration (Minutes) <span class="hint">(Optional)</span>
         <input class="input" type="number" name="standard_minutes" min="1" max="6000" step="1" value="${s.standard_minutes ?? ""}" placeholder="e.g. 120" style="max-width:160px">
-        <span class="hint">How long this learning normally takes. Modules taken in RCM Academy Hub count the learner's actual active time (up to twice this). For courses taken outside the tool, trainers confirm the hours when approving the certificate, starting from this number.</span>
+        <span class="hint">How long this learning normally takes. Modules taken in ${brand.platform} count the learner's actual active time (up to twice this). For courses taken outside the tool, trainers confirm the hours when approving the certificate, starting from this number.</span>
       </label>
       <div class="notice info" data-for="assessment survey">After saving, click <b>Build</b> on this step to add sections, questions, the timer and other settings.</div>
       <label class="check" data-for="module ilt_session assessment survey upload"><input type="checkbox" name="is_required" ${s.is_required ? "checked" : ""}> Counts Toward Completion</label>`,

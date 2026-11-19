@@ -4,7 +4,7 @@
 //             #/reviews/<program>  the review page
 //   Trainers: Program → Reviews tab (reviewers, who approved what, comments)
 import { sb } from "../supabase.js";
-import { esc, toast, openModal, icons, stepIcon, statusPill, fmtDate, fmtDateTime, PROGRAM_TYPE, STEP_TYPE, QTYPE, LIKERT, ROLE_LABEL } from "../ui.js";
+import { team, esc, toast, openModal, icons, stepIcon, statusPill, fmtDate, fmtDateTime, PROGRAM_TYPE, STEP_TYPE, QTYPE, LIKERT, ROLE_LABEL } from "../ui.js";
 
 // ---------------------------------------------------------------------
 // Shared: the parts of a program, and a fingerprint of what each looked like
@@ -162,7 +162,7 @@ export async function renderLeaderReviews(main, ctx) {
   if (error) { box.innerHTML = `<div class="empty"><div><strong>Couldn't Load</strong>${esc(error.message)}</div></div>`; return; }
   const programs = (mine ?? []).map((r) => r.program).filter(Boolean);
   if (!programs.length) {
-    box.innerHTML = '<div class="empty"><div><strong>Nothing To Review Yet</strong>The Technical Training Team will add you to a program when it\'s ready for your review.</div></div>';
+    box.innerHTML = `<div class="empty"><div><strong>Nothing To Review Yet</strong>The ${team()} will add you to a program when it's ready for your review.</div></div>`;
     return;
   }
   const ids = programs.map((p) => p.id);
@@ -271,7 +271,7 @@ async function reviewPage(main, me, programId) {
       send.disabled = true;
       try {
         await sendComment(programId, p, body, me.id);
-        toast("Comment added. The Technical Training Team will see it.");
+        toast(`Comment added. The ${team()} will see it.`);
         open.add(p.key);
         const { data } = await sb.from("review_comments").select("*").eq("program_id", programId).order("created_at");
         comments.splice(0, comments.length, ...(data ?? []));

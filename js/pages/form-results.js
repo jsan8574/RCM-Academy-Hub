@@ -2,7 +2,7 @@
 // (summary per question, every response, names only when shared).
 //   #/programs/<program>/results/<step>
 import { sb } from "../supabase.js";
-import { esc, toast, openModal, icons, fmtDate, fmtDateTime, QTYPE, LIKERT, LIBS, loadScript, safeName } from "../ui.js";
+import { brand, esc, toast, openModal, icons, fmtDate, fmtDateTime, QTYPE, LIKERT, LIBS, loadScript, safeName } from "../ui.js";
 
 export async function renderFormResults(main, program, stepId, me) {
   main.innerHTML = '<div class="empty" style="margin-top:24px"><div>Loading…</div></div>';
@@ -210,7 +210,7 @@ async function assessmentResults({ main, program, step, questions, enrolled, me,
       title: attempt ? `Change Score: ${r.e.learner.full_name}` : `Enter Score: ${r.e.learner.full_name}`,
       intro: attempt
         ? `Current score ${attempt.percent == null ? "–" : `${Number(attempt.percent)}%`}. The original score is kept in the record.`
-        : "Use this for an assessment taken outside RCM Academy Hub, for example on paper. It counts as a separate attempt.",
+        : `Use this for an assessment taken outside ${brand.platform}, for example on paper. It counts as a separate attempt.`,
       body: `
         <label class="field">Score (%) <input class="input" type="number" name="pct" min="0" max="100" step="0.1" value="${attempt?.percent ?? ""}" style="max-width:160px"></label>
         <label class="field">Reason <input class="input" name="reason" placeholder="${attempt ? "e.g. Re-marked question 4" : "e.g. Paper assessment on 12 Nov"}"></label>`,
