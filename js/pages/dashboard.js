@@ -76,11 +76,11 @@ function watchLiveNow(box) {
 }
 
 async function loadData() {
-  const [programs, enrollments, progress, steps, stepProgress, attempts, uploads, threads, exclusions, responses, scaleQs, testEvents] = await Promise.all([
+  const [programs, enrollments, progress, steps, stepProgress, attempts, uploads, threads, exclusions, responses, scaleQs, testEvents, deliveries, sessionRows] = await Promise.all([
     all(() => sb.from("programs").select("id, title, program_type, status, start_date, due_date, owner:profiles!programs_owner_id_fkey(full_name)").order("title")),
     all(() => sb.from("enrollments").select("id, program_id, learner_id, due_date_override, enrolled_at, learner:profiles(full_name, email, is_active, department, designation, market, manager)")),
     all(() => sb.from("v_enrollment_progress").select("*")),
-    all(() => sb.from("program_steps").select("id, program_id, position, step_type, title, is_required, passing_score").order("position")),
+    all(() => sb.from("program_steps").select("id, program_id, position, step_type, title, is_required, passing_score, session_start").order("position")),
     all(() => sb.from("step_progress").select("enrollment_id, step_id, status, score, started_at, completed_at")),
     all(() => sb.from("assessment_attempts").select("id, enrollment_id, step_id, status, score, max_score, percent, passed, submitted_at, exit_count")),
     all(() => sb.from("uploads").select("enrollment_id, step_id, file_name, status, uploaded_at, reviewed_at, review_comment, reviewer:profiles!uploads_reviewed_by_fkey(full_name)")),
@@ -89,9 +89,11 @@ async function loadData() {
     all(() => sb.from("survey_responses").select("step_id, respondent_id, answers, submitted_at")),
     all(() => sb.from("assessment_questions").select("id, step_id, qtype").in("qtype", ["rating", "likert", "nps", "text", "paragraph"])),
     all(() => sb.from("assessment_events").select("attempt_id, kind, seconds_away, created_at").order("created_at")),
+    all(() => sb.from("session_delivery").select("step_id, status, scheduled_minutes, actual_minutes, actual_start, trainer_ids")).catch(() => []),
+    all(() => sb.from("session_attendance").select("step_id, email, minutes")).catch(() => []),
   ]);
   // Projects are task lists without learners; they live on Tasks & Hours, not here
-  return { programs: programs.filter((p) => p.program_type !== "project"), enrollments, progress, steps, stepProgress, attempts, uploads, threads, exclusions, responses, scaleQs, testEvents };
+  return { programs: programs.filter((p) => p.program_type !== "project"), enrollments, progress, steps, stepProgress, attempts, uploads, threads, exclusions, responses, scaleQs, testEvents, deliveries, sessionRows };
 }
 
 function periodStart(key) {
@@ -288,6 +290,32 @@ function compute(d) {
   const attemptsInPeriod = attempts.filter((a) => inPeriod(a.submitted_at));
   const learnersFinishedInPeriod = learners.filter((l) => l.status === "Completed" && inPeriod(l.lastActivity)).length;
 
+  // --- Live session hours (confirmed Teams reports only) ---
+  // Trainer hours: delivered time for each trainer who ran it. Learner hours: each enrolled
+  // learner's time in the session, capped at the session's actual length.
+  const settled = (d.deliveries ?? []).filter((x) => x.status !== "needs_confirmation" && stepById[x.step_id] &&
+    inPeriod(x.actual_start ?? stepById[x.step_id].session_start ?? null));
+  const settledBy = Object.fromEntries(settled.map((x) => [x.step_id, x]));
+  const trainerHours = settled.reduce((a, x) => a + (Number(x.actual_minutes) / 60) * Math.max(1, (x.trainer_ids ?? []).length), 0);
+  const excluded = new Set(d.exclusions.map((x) => `${x.enrollment_id}|${x.step_id}`));
+  const enrolledByProgramEmail = {};
+  for (const e of enrollments) enrolledByProgramEmail[`${e.program_id}|${String(e.learner.email ?? "").toLowerCase()}`] = e;
+  let learnerMinutes = 0;
+  const learnersTrained = new Set();
+  for (const r of d.sessionRows ?? []) {
+    const x = settledBy[r.step_id];
+    if (!x || !r.email) continue;
+    const e = enrolledByProgramEmail[`${stepById[r.step_id].program_id}|${r.email}`];
+    if (!e || excluded.has(`${e.id}|${r.step_id}`)) continue;
+    learnerMinutes += Math.min(Number(r.minutes), Number(x.actual_minutes));
+    learnersTrained.add(e.learner_id);
+  }
+  const fmtHours = (h) => (h >= 100 ? Math.round(h).toLocaleString() : (Math.round(h * 10) / 10).toLocaleString());
+  const hours = {
+    trainer: trainerHours, learner: learnerMinutes / 60, sessions: settled.length, learners: learnersTrained.size,
+    trainerText: settled.length ? fmtHours(trainerHours) : "–", learnerText: settled.length ? fmtHours(learnerMinutes / 60) : "–",
+  };
+
   const kpis = [
     { label: "Live Programs", value: programs.filter((p) => p.status === "live").length, hint: `${programs.length} in view` },
     { label: "Learners Enrolled", value: new Set(enrollments.map((e) => e.learner_id)).size, hint: `${enrollments.length} enrolment${enrollments.length === 1 ? "" : "s"}` },
@@ -297,6 +325,8 @@ function compute(d) {
     { label: "Average Assessment Score", value: attemptsInPeriod.length ? `${Math.round(attemptsInPeriod.reduce((a, t) => a + Number(t.percent), 0) / attemptsInPeriod.length)}%` : "–",
       hint: attemptsInPeriod.length ? `${Math.round((attemptsInPeriod.filter((t) => t.passed).length / attemptsInPeriod.length) * 100)}% pass rate, ${attemptsInPeriod.length} attempts` : `No attempts ${PERIODS[filters.period].toLowerCase()}` },
     { label: "Overdue Learners", value: learners.filter((l) => l.status === "Overdue").length, hint: `${learners.filter((l) => l.status === "Due Soon").length} due within 7 days`, tone: "crit" },
+    { label: "Trainer Hours Delivered", value: hours.trainerText, hint: `${plural(hours.sessions, "live session")} ${PERIODS[filters.period].toLowerCase()} (Teams reports)` },
+    { label: "Learner Hours Trained", value: hours.learnerText, hint: `${plural(hours.learners, "enrolled learner")} in live sessions` },
     { label: "Waiting For Review", value: uploads.filter((u) => u.status === "pending").length, hint: `${d.threads.filter((t) => t.status === "open" && (!t.program_id || programById[t.program_id])).length} open messages`, tone: "warn" },
   ];
 
@@ -317,6 +347,8 @@ function compute(d) {
     avgPct: learners.length ? Math.round(learners.reduce((a, l) => a + l.pct, 0) / learners.length) : 0,
     finished: count("Completed"),
     finishedInPeriod: learnersFinishedInPeriod,
+    hours,
+    unconfirmed: (d.deliveries ?? []).filter((x) => x.status === "needs_confirmation" && stepById[x.step_id]).map((x) => ({ ...x, step: stepById[x.step_id], program: programById[stepById[x.step_id].program_id] })),
     stepsInPeriod: completedInPeriod.length,
     avgScore: attemptsInPeriod.length ? Math.round(attemptsInPeriod.reduce((a, t) => a + Number(t.percent), 0) / attemptsInPeriod.length) : null,
     passRate: attemptsInPeriod.length ? Math.round((attemptsInPeriod.filter((t) => t.passed).length / attemptsInPeriod.length) * 100) : null,
@@ -589,6 +621,12 @@ function wordCloud({ comments, words }) {
 function attentionCard(v) {
   const s = v.summary;
   const items = [
+    ...s.unconfirmed.map((x) => `
+      <a class="att-item" href="#/programs/${x.program.id}/journey">
+        <span class="att-dot warn">${icons.flag}</span>
+        <span class="att-text"><strong>Confirm Session Length: ${esc(x.step.title)}</strong><span>${esc(x.program.title)} · ran ${Math.round(x.actual_minutes)} min, scheduled ${Math.round(x.scheduled_minutes)} min</span></span>
+        <span class="pill warn">Needs Confirmation</span>
+      </a>`),
     ...v.attention.slice(0, 5).map((l) => `
       <a class="att-item" href="#/programs/${l.programId}/learners">
         <span class="att-dot ${l.status === "Overdue" ? "crit" : "warn"}">${icons.clock}</span>
@@ -611,9 +649,9 @@ function attentionCard(v) {
   const more = v.attention.length - 5;
   return `
     <div class="card att-card">
-      <div class="card-head"><h2>Needs Attention</h2><span class="muted small">${items.length ? plural(v.attention.length + (s.pendingReviews ? 1 : 0) + (s.openMessages ? 1 : 0), "item") : ""}</span></div>
+      <div class="card-head"><h2>Needs Attention</h2><span class="muted small">${items.length ? plural(s.unconfirmed.length + v.attention.length + (s.pendingReviews ? 1 : 0) + (s.openMessages ? 1 : 0), "item") : ""}</span></div>
       ${items.length ? `<div class="att-list">${items.join("")}</div>${more > 0 ? `<p class="muted small" style="margin:8px 0 0">+ ${more} more in the By Learner table below</p>` : ""}`
-        : `<div class="all-clear"><span>${icons.check}</span><div><strong>All Clear</strong><span class="muted small">No overdue learners, reviews or messages.</span></div></div>`}
+        : `<div class="all-clear"><span>${icons.check}</span><div><strong>All Clear</strong><span class="muted small">No overdue learners, reviews, messages or sessions to confirm.</span></div></div>`}
     </div>`;
 }
 
@@ -680,7 +718,10 @@ function drawDashboard(box, v) {
           <div><b>${s.learners}</b><span>Learners Enrolled</span></div>
           <div><b>${s.finished}</b><span>Learners Completed</span></div>
           <div><b>${s.fb.rating ?? "–"}</b><span>Average Rating</span></div>
+          <div title="Delivered live-session time for each trainer who ran it, from confirmed Teams reports"><b>${s.hours.trainerText}</b><span>Trainer Hours Delivered</span></div>
+          <div title="Time enrolled learners spent in live sessions, from confirmed Teams reports"><b>${s.hours.learnerText}</b><span>Learner Hours Trained</span></div>
         </div>
+        <p class="hero-note">Hours are from live sessions with a confirmed Teams report.</p>
       </div>
       <div class="dash-hero-ring">
         <div class="ring anim hero-ring" style="--p:${s.avgPct}"><span><b>${s.avgPct}%</b>Average Completion</span></div>
@@ -946,7 +987,7 @@ async function exportPdf(v, data, me) {
   doc.text([scope, PERIODS[filters.period], filters.type && PROGRAM_TYPE[filters.type], filters.market, filters.department, filters.designation, filters.manager && `Manager: ${filters.manager}`].filter(Boolean).join("  |  "), M, 74);
   doc.text(`Generated ${generated} by ${me.full_name}`, M, 92);
 
-  // KPI tiles (4 x 2)
+  // KPI tiles (4 per row)
   let y = 140;
   const gap = 10;
   const tileW = (W - M * 2 - gap * 3) / 4;
@@ -971,7 +1012,7 @@ async function exportPdf(v, data, me) {
     doc.setTextColor(...MUTED);
     doc.text(doc.splitTextToSize(k.hint, tileW - 18)[0], x + 12, ty + 54);
   });
-  y += tileH * 2 + gap + 12;
+  y += Math.ceil(v.kpis.length / 4) * (tileH + gap) + 2;
 
   // Learner feedback tiles
   doc.setFont("helvetica", "bold");

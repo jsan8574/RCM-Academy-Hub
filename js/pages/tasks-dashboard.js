@@ -29,11 +29,12 @@ export async function renderTasksDashboard(main) {
     </div></div>
     <div id="thd"><div class="empty"><div>Loading…</div></div></div>`;
 
-  const [{ data: tasks, error }, { data: time }, { data: team }, { data: programs }] = await Promise.all([
+  const [{ data: tasks, error }, { data: time }, { data: team }, { data: programs }, { data: deliveries }] = await Promise.all([
     sb.from("program_tasks").select("*"),
     sb.from("task_time").select("*"),
     sb.from("profiles").select("id, full_name, role, is_active").in("role", ["admin", "ld"]).order("full_name"),
     sb.from("programs").select("id, title, status, start_date, task_session_date").neq("status", "archived").order("title"),
+    sb.from("session_delivery").select("*, step:program_steps(id, title, program_id, session_start)"),
   ]);
   const box = main.querySelector("#thd");
   if (error) { box.innerHTML = `<div class="empty"><div><strong>Couldn't Load Tasks</strong>${esc(error.message)}</div></div>`; return; }
@@ -139,6 +140,8 @@ export async function renderTasksDashboard(main) {
         </section>
       </div>
 
+      ${deliveryCard()}
+
       <h2 class="section-title" style="margin-top:18px">Task Status By Program</h2>
       ${progRows.length ? `<div class="table-wrap"><table class="data">
         <thead><tr><th>Program</th>${TASK_STATUS.map((s) => `<th>${s}</th>`).join("")}<th>Overdue</th><th>Hours ${esc(PERIODS[filters.period])}</th></tr></thead>
@@ -149,6 +152,50 @@ export async function renderTasksDashboard(main) {
           <td>${fmtH(r.h)}</td></tr>`).join("")}</tbody></table></div>`
         : '<div class="empty"><div><strong>No Tasks Yet</strong>Open a program and use its Tasks tab to add the team\'s deliverables.</div></div>'}`;
   };
+
+  // Live sessions: scheduled vs delivered, from imported Teams reports
+  function deliveryCard() {
+    const [from, to] = periodRange(filters.period);
+    const D = (deliveries ?? []).filter((d) => d.step && progName[d.step.program_id] !== undefined &&
+      (!filters.program || d.step.program_id === filters.program) &&
+      (!filters.person || (d.trainer_ids ?? []).includes(filters.person)) &&
+      (() => { const day = isoDay(new Date(d.step.session_start ?? d.actual_start ?? d.imported_at)); return (!from || day >= from) && (!to || day <= to); })());
+    if (!D.length) {
+      return `<section class="card" style="margin-top:12px"><h2 class="section-title">Live Session Delivery</h2>
+        <p class="muted" style="margin:0">No Teams attendance reports in this period. Import one from a Live Session's Attendance to see scheduled vs delivered time here.</p></section>`;
+    }
+    const diff = (d) => Number(d.actual_minutes) - Number(d.scheduled_minutes);
+    const short = D.filter((d) => diff(d) < -10), long = D.filter((d) => diff(d) > 10);
+    const pending = D.filter((d) => d.status === "needs_confirmation");
+    const cancelled = short.filter((d) => /cancel/i.test(d.reason ?? ""));
+    const sumH = (list, k) => list.reduce((a, d) => a + Number(d[k]) / 60, 0);
+    const reasons = {};
+    for (const d of D) if (d.reason) reasons[d.reason] = (reasons[d.reason] ?? 0) + 1;
+    const flagged = [...pending, ...D.filter((d) => d.status !== "needs_confirmation" && Math.abs(diff(d)) > 10)];
+    const fmtM = (m) => { const n = Math.round(Math.abs(m)); return n >= 60 ? `${Math.floor(n / 60)}h ${n % 60}m` : `${n}m`; };
+    return `<section class="card" style="margin-top:12px">
+      <h2 class="section-title">Live Session Delivery</h2>
+      <div class="thd-mini">
+        <div><b>${D.length}</b><span>Sessions Reported</span></div>
+        <div><b>${fmtH(sumH(D, "scheduled_minutes"))}</b><span>Scheduled</span></div>
+        <div><b>${fmtH(sumH(D, "actual_minutes"))}</b><span>Delivered</span></div>
+        <div><b>${short.length}</b><span>Ended Early${cancelled.length ? ` (${cancelled.length} Cancelled)` : ""}</span></div>
+        <div><b>${long.length}</b><span>Ran Over</span></div>
+        <div class="${pending.length ? "hot" : ""}"><b>${pending.length}</b><span>Needs Confirmation</span></div>
+      </div>
+      ${Object.keys(reasons).length ? `<div class="ta-chips" style="margin-top:10px">${Object.entries(reasons).sort((a, b) => b[1] - a[1]).map(([r, n]) => `<span class="pill">${esc(r)}: ${n}</span>`).join("")}</div>` : ""}
+      ${flagged.length ? `<div class="table-wrap" style="margin-top:10px"><table class="data">
+        <thead><tr><th>Session</th><th>Date</th><th>Scheduled</th><th>Delivered</th><th>Difference</th><th>Reason</th></tr></thead>
+        <tbody>${flagged.map((d) => `<tr>
+          <td class="name"><a class="link-btn dark" href="#/programs/${d.step.program_id}/journey"><strong>${esc(d.step.title)}</strong></a><span>${esc(progName[d.step.program_id])}</span></td>
+          <td style="white-space:nowrap">${esc(fmtDay(isoDay(new Date(d.step.session_start ?? d.actual_start ?? d.imported_at))))}</td>
+          <td>${fmtM(d.scheduled_minutes)}</td><td>${fmtM(d.actual_minutes)}</td>
+          <td><span class="pill ${diff(d) < 0 ? "warn" : "teal"}">${fmtM(diff(d))} ${diff(d) < 0 ? "shorter" : "longer"}</span></td>
+          <td>${d.status === "needs_confirmation" ? '<span class="pill warn">Needs Confirmation</span>' : esc(d.reason ?? "")}${d.note ? `<div class="muted small">${esc(d.note)}</div>` : ""}</td>
+        </tr>`).join("")}</tbody></table></div>` : '<p class="muted small" style="margin:10px 0 0">Every reported session ran within 10 minutes of its schedule.</p>'}
+      <p class="muted small" style="margin:8px 0 0">Delivered hours are added to the trainers' time automatically (task “Deliver Live Session”).</p>
+    </section>`;
+  }
 
   // Clicking through to a program opens its Tasks tab with the same filter
   box.addEventListener("click", (e) => {

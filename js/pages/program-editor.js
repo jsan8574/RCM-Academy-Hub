@@ -8,6 +8,7 @@ import { renderFormBuilder } from "./form-builder.js";
 import { renderFormResults } from "./form-results.js";
 import { tasksTab } from "./program-tasks.js";
 import { reviewsTab } from "./program-reviews.js";
+import { importTeamsReport, showTeamsReport, fmtMin, tierOf, diffText } from "./teams-attendance.js";
 
 const VIDEO_BUCKET = "welcome-videos";
 const UPLOAD_BUCKET = "learner-uploads";
@@ -89,7 +90,7 @@ export async function renderProgramEditor(main, ctx) {
       <div>
         <a class="back-link" href="#/programs">${icons.back} Programs</a>
         <h1>${esc(program.title)}</h1>
-        <p>${statusPill(program.status)} &nbsp;${esc(PROGRAM_TYPE[program.program_type])}${program.audience && !project ? ` · ${esc(program.audience)}` : ""}</p>
+        <p>${statusPill(program.status)} &nbsp;${esc(PROGRAM_TYPE[program.program_type])}${program.client ? ` · ${esc(program.client)}` : ""}${program.audience && !project ? ` · ${esc(program.audience)}` : ""}</p>
       </div>
       <div class="top-actions">
         ${(project ? PROJECT_NEXT : NEXT_STATUS)[program.status].map(([to, label], i) =>
@@ -181,7 +182,7 @@ function duplicateProgram(program, me) {
       if (!title) throw new Error("Please give the copy a title.");
 
       const { data: copy, error } = await sb.from("programs").insert({
-        title, program_type: program.program_type, audience: program.audience, objectives: program.objectives,
+        title, program_type: program.program_type, audience: program.audience, client: program.client, objectives: program.objectives,
         overview: program.overview, welcome_message: program.welcome_message, required_reading: program.required_reading,
         owner_id: me.id,
       }).select("id").single();
@@ -446,8 +447,11 @@ const linkOf = (step) => (Array.isArray(step.step_links) ? step.step_links[0]?.u
 // =====================================================================
 async function detailsTab(area, program, reload) {
   const project = isProject(program);
-  const { data: staff } = await sb.from("profiles").select("id, full_name")
-    .in("role", ["admin", "ld"]).eq("is_active", true).order("full_name");
+  const [{ data: staff }, { data: others }] = await Promise.all([
+    sb.from("profiles").select("id, full_name").in("role", ["admin", "ld"]).eq("is_active", true).order("full_name"),
+    sb.from("programs").select("client"),
+  ]);
+  const clients = [...new Set((others ?? []).map((p) => (p.client ?? "").trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b));
 
   area.innerHTML = `
     <form class="card form-grid" novalidate>
@@ -464,6 +468,10 @@ async function detailsTab(area, program, reload) {
           ${(staff ?? []).map((s) => `<option value="${s.id}" ${s.id === program.owner_id ? "selected" : ""}>${esc(s.full_name)}</option>`).join("")}
         </select>
       </label>
+      <label class="field span-2">Client / Group (Optional)
+        <input class="input" name="client" list="client-list" value="${esc(program.client ?? "")}" placeholder="e.g. UT Health, VMMC, Patient Access team" autocomplete="off">
+        <datalist id="client-list">${clients.map((c) => `<option value="${esc(c)}">`).join("")}</datalist>
+        <span class="hint">The client or group this ${project ? "project" : "program"} supports. Pick one already used to keep names consistent.</span></label>
       <label class="field span-2" ${project ? "hidden" : ""}>Audience <input class="input" name="audience" value="${esc(program.audience ?? "")}" placeholder="e.g. Team leads, new hires"></label>
       <label class="field">Start Date <input class="input" type="date" name="start_date" value="${esc(program.start_date ?? "")}"></label>
       <label class="field">Due Date <input class="input" type="date" name="due_date" value="${esc(program.due_date ?? "")}">
@@ -488,6 +496,7 @@ async function detailsTab(area, program, reload) {
       title,
       program_type: project ? "project" : form.program_type.value,
       owner_id: form.owner_id.value || null,
+      client: form.client.value.trim() || null,
       audience: form.audience.value.trim() || null,
       start_date: form.start_date.value || null,
       due_date: form.due_date.value || null,
@@ -610,6 +619,12 @@ async function journeyTab(area, program, reload) {
     area.innerHTML = `<div class="empty"><div><strong>Couldn't Load The Learning Journey</strong>${esc(error.message)}</div></div>`;
     return;
   }
+  // Live sessions: scheduled vs actual from imported Teams reports
+  const live = steps.filter((s) => s.step_type === "ilt_session").map((s) => s.id);
+  if (live.length) {
+    const { data: deliveries } = await sb.from("session_delivery").select("step_id, status, scheduled_minutes, actual_minutes, reason").in("step_id", live);
+    for (const dl of deliveries ?? []) { const s = steps.find((x) => x.id === dl.step_id); if (s) s.delivery = dl; }
+  }
 
   area.innerHTML = `
     <div class="tab-head">
@@ -706,6 +721,8 @@ function stepCard(s, i, total) {
     s.step_type === "upload" && (s.max_files ?? 1) > 1 && `<span class="pill">Up To ${s.max_files} Files</span>`,
     s.step_type === "upload" && '<span class="pill teal">Checked By Trainer</span>',
     s.step_type === "resource" ? '<span class="pill">Extra (Not Counted)</span>' : !s.is_required && '<span class="pill">Optional</span>',
+    s.delivery?.status === "needs_confirmation" && `<span class="pill warn" title="Open Attendance → View Teams Report to confirm">${icons.flag} Session Length Needs Confirmation</span>`,
+    s.delivery && s.delivery.status !== "needs_confirmation" && `<span class="pill ${s.delivery.status === "matched" ? "good" : "teal"}">Delivered ${fmtMin(s.delivery.actual_minutes)}${s.delivery.status === "matched" ? "" : ` · ${esc(diffText(s.delivery.actual_minutes, s.delivery.scheduled_minutes))}${s.delivery.reason ? ` · ${esc(s.delivery.reason)}` : ""}`}</span>`,
   ].filter(Boolean);
 
   return `
@@ -850,10 +867,22 @@ function editStep(program, step, steps, reload) {
 
 // Live sessions are completed when Trainer records who attended
 async function markAttendance(program, step, reload) {
-  const [{ data: enrolled, error }, { data: progress }] = await Promise.all([
+  const [{ data: enrolled, error }, { data: progress }, { data: teams }] = await Promise.all([
     sb.from("enrollments").select("id, learner:profiles(full_name, email), enrollment_exclusions(step_id)").eq("program_id", program.id),
     sb.from("step_progress").select("enrollment_id, status").eq("step_id", step.id),
+    sb.from("session_attendance").select("email, minutes, attended, required_minutes, imported_at").eq("step_id", step.id),
   ]);
+  const { data: delivery } = await sb.from("session_delivery").select("status").eq("step_id", step.id).maybeSingle();
+  const unconfirmed = delivery?.status === "needs_confirmation";
+  // Minutes from the imported Teams report, by email
+  const teamsBy = new Map((teams ?? []).filter((r) => r.email).map((r) => [r.email, r]));
+  const teamsBar = `<div class="ta-bar">
+      <span class="muted small">${unconfirmed ? `<span class="pill warn">${icons.flag} Session Length Needs Confirmation</span> Open the Teams report to confirm. Nobody is marked from it until then.` : teams?.length ? `Teams report imported ${esc(fmtDateTime(teams[0].imported_at))} · ${teams.length} joined` : "Have the Teams attendance report? Import it to tick everyone automatically."}</span>
+      <span style="display:flex;gap:6px;flex-wrap:wrap">
+        ${teams?.length ? `<button type="button" class="btn sm ${unconfirmed ? "primary" : ""}" data-teams-view>${unconfirmed ? "Confirm Session" : "View Teams Report"}</button>` : ""}
+        <button type="button" class="btn sm primary" data-teams-import>${icons.upload} Import Teams Report</button>
+      </span>
+    </div>`;
   if (error) return toast(error.message, "err");
   const attended = new Set((progress ?? []).filter((p) => p.status === "completed").map((p) => p.enrollment_id));
   // Learners who had this session removed don't appear
@@ -867,6 +896,7 @@ async function markAttendance(program, step, reload) {
     intro: step.session_start ? `Session on ${esc(fmtDateTime(step.session_start))}. Tick everyone who attended.` : "Tick everyone who attended.",
     wide: true,
     body: enrolled.length ? `
+      ${teamsBar}
       <div class="toolbar" style="margin:0">
         <label class="check"><input type="checkbox" data-all> Select All</label>
         <span class="count" data-picked></span>
@@ -876,8 +906,11 @@ async function markAttendance(program, step, reload) {
           <label class="check-row">
             <input type="checkbox" value="${e.id}" ${attended.has(e.id) ? "checked" : ""}>
             <span><strong>${esc(e.learner.full_name)}</strong><span class="muted">${esc(e.learner.email)}</span></span>
+            ${teams?.length ? (() => { const r = teamsBy.get(String(e.learner.email ?? "").toLowerCase());
+              const tr = r && tierOf(r.minutes, r.required_minutes);
+              return r ? `<span class="pill ${tr.cls}" style="margin-left:auto">Teams: ${tr.label} · ${fmtMin(r.minutes)} (${tr.pct}%)</span>` : '<span class="pill crit" style="margin-left:auto">Teams: Absent · Did Not Join</span>'; })() : ""}
           </label>`).join("")}
-      </div>` : '<div class="empty"><div><strong>No Learners Enrolled</strong>Enroll learners on the Learners tab first.</div></div>',
+      </div>` : `${teamsBar}<div class="empty"><div><strong>No Learners Enrolled</strong>Enroll learners on the Learners tab first. A Teams report imported now is kept, and people are marked attended when they're enrolled.</div></div>`,
     submitLabel: enrolled.length ? "Save Attendance" : "",
     cancelLabel: enrolled.length ? "Cancel" : "Close",
     onSubmit: async (f) => {
@@ -900,6 +933,9 @@ async function markAttendance(program, step, reload) {
       reload();
     },
   });
+  const closeThen = (fn) => () => { form.closest(".modal-backdrop").remove(); fn(program, step, reload); };
+  form.querySelector("[data-teams-import]").addEventListener("click", closeThen(importTeamsReport));
+  form.querySelector("[data-teams-view]")?.addEventListener("click", closeThen(showTeamsReport));
   if (!enrolled.length) return;
   const boxes = [...form.querySelectorAll(".checklist input")];
   const count = () => { form.querySelector("[data-picked]").textContent = `${boxes.filter((b) => b.checked).length} of ${boxes.length} attended`; };

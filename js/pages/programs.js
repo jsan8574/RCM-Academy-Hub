@@ -3,7 +3,7 @@ import { sb } from "../supabase.js";
 import { esc, openModal, toast, icons, fmtDate, statusPill, PROGRAM_TYPE, PROGRAM_STATUS } from "../ui.js";
 import { renderProgramEditor } from "./program-editor.js";
 
-const filters = { q: "", status: "current", type: "" };
+const filters = { q: "", status: "current", type: "", client: "" };
 
 export async function renderPrograms(main, ctx) {
   if (ctx.params[0]) return renderProgramEditor(main, ctx);
@@ -24,6 +24,7 @@ export async function renderPrograms(main, ctx) {
         <option value="">All Types</option>
         ${Object.entries(PROGRAM_TYPE).map(([k, l]) => `<option value="${k}">${l}</option>`).join("")}
       </select>
+      <select class="select" data-f="client" hidden><option value="">All Clients / Groups</option></select>
       <span class="count"></span>
     </div>
     <div id="program-list"><div class="empty"><div>Loading…</div></div></div>`;
@@ -34,7 +35,7 @@ export async function renderPrograms(main, ctx) {
 
   const [{ data: programs, error }, { data: progress }] = await Promise.all([
     sb.from("programs")
-      .select("id, title, program_type, audience, status, start_date, due_date, owner:profiles!programs_owner_id_fkey(full_name), program_steps(count), enrollments(count)")
+      .select("id, title, program_type, audience, client, status, start_date, due_date, owner:profiles!programs_owner_id_fkey(full_name), program_steps(count), enrollments(count)")
       .order("created_at", { ascending: false }),
     sb.from("v_enrollment_progress").select("program_id, percent_complete"),
   ]);
@@ -44,13 +45,24 @@ export async function renderPrograms(main, ctx) {
     return;
   }
 
+  // Client / Group: filter list and suggestions come from what's already been typed
+  const clients = [...new Set(programs.map((p) => (p.client ?? "").trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  const clientSel = main.querySelector('[data-f="client"]');
+  if (clients.length) {
+    clientSel.insertAdjacentHTML("beforeend", clients.map((c) => `<option>${esc(c)}</option>`).join(""));
+    clientSel.hidden = false;
+    clientSel.value = clients.includes(filters.client) ? filters.client : "";
+  }
+  filters.client = clientSel.value;
+
   const avg = {};
   for (const p of progress ?? []) (avg[p.program_id] ??= []).push(Number(p.percent_complete));
 
   const draw = () => {
     const q = filters.q.trim().toLowerCase();
     const shown = programs.filter((p) =>
-      (!q || p.title.toLowerCase().includes(q) || (p.audience ?? "").toLowerCase().includes(q)) &&
+      (!q || [p.title, p.audience, p.client].some((v) => (v ?? "").toLowerCase().includes(q))) &&
+      (!filters.client || (p.client ?? "").trim() === filters.client) &&
       (filters.status === "" || (filters.status === "current" ? p.status !== "archived" : p.status === filters.status)) &&
       (!filters.type || p.program_type === filters.type));
     main.querySelector(".count").textContent = `${shown.length} of ${programs.length}`;
@@ -65,7 +77,7 @@ export async function renderPrograms(main, ctx) {
     list.innerHTML = `
       <div class="table-wrap">
         <table class="data clickable">
-          <thead><tr><th>Program</th><th>Type</th><th>Status</th><th>Dates</th><th>Steps</th><th>Learners</th><th>Avg. Completion</th><th>Owner</th></tr></thead>
+          <thead><tr><th>Program</th><th>Client / Group</th><th>Type</th><th>Status</th><th>Dates</th><th>Steps</th><th>Learners</th><th>Avg. Completion</th><th>Owner</th></tr></thead>
           <tbody>${shown.map((p) => {
             const scores = avg[p.id] ?? [];
             const mean = scores.length ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : null;
@@ -73,6 +85,7 @@ export async function renderPrograms(main, ctx) {
             return `
               <tr data-open="${p.id}" tabindex="0">
                 <td class="name"><strong>${esc(p.title)}</strong><span>${esc(p.audience ?? "")}</span></td>
+                <td>${p.client ? esc(p.client) : '<span class="muted">–</span>'}</td>
                 <td>${esc(PROGRAM_TYPE[p.program_type])}</td>
                 <td>${statusPill(p.status)}</td>
                 <td>${p.start_date || p.due_date ? `${esc(fmtDate(p.start_date) || "–")} → ${esc(fmtDate(p.due_date) || "–")}` : '<span class="muted">Not Set</span>'}</td>
@@ -109,6 +122,10 @@ export async function renderPrograms(main, ctx) {
           </select>
           <span class="hint" data-type-hint></span>
         </label>
+        <label class="field">Client / Group (Optional)
+          <input class="input" name="client" list="client-list" placeholder="e.g. UT Health, VMMC, Patient Access team" autocomplete="off">
+          <datalist id="client-list">${clients.map((c) => `<option value="${esc(c)}">`).join("")}</datalist>
+        </label>
         <label class="field" data-audience>Audience <input class="input" name="audience" placeholder="e.g. Team leads, new hires"></label>
         <div class="two">
           <label class="field">Start Date <input class="input" type="date" name="start_date"></label>
@@ -123,6 +140,7 @@ export async function renderPrograms(main, ctx) {
           title,
           program_type: f.program_type.value,
           audience: project ? null : f.audience.value.trim() || null,
+          client: f.client.value.trim() || null,
           start_date: f.start_date.value || null,
           due_date: f.due_date.value || null,
           owner_id: ctx.me.id,
