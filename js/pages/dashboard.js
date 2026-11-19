@@ -7,7 +7,7 @@ import {
 } from "../ui.js";
 
 const PERIODS = { week: "This Week", month: "This Month", quarter: "This Quarter", year: "This Year", all: "All Time" };
-const filters = { period: "month", program: "", type: "", market: "", department: "", designation: "", manager: "", view: "programs", q: "", groupBy: "program" };
+const filters = { period: "month", program: "", client: "", type: "", market: "", department: "", designation: "", manager: "", view: "programs", q: "", groupBy: "program" };
 // Learner details the dashboard can group and filter by
 const GROUPS = { department: "Department", designation: "Designation", market: "Market", manager: "Reporting Manager" };
 const ALL_LABEL = { department: "All Departments", designation: "All Designations", market: "All Markets", manager: "All Managers" };
@@ -77,7 +77,7 @@ function watchLiveNow(box) {
 
 async function loadData() {
   const [programs, enrollments, progress, steps, stepProgress, attempts, uploads, threads, exclusions, responses, scaleQs, testEvents, deliveries, sessionRows] = await Promise.all([
-    all(() => sb.from("programs").select("id, title, program_type, status, start_date, due_date, owner:profiles!programs_owner_id_fkey(full_name)").order("title")),
+    all(() => sb.from("programs").select("id, title, client, program_type, status, start_date, due_date, owner:profiles!programs_owner_id_fkey(full_name)").order("title")),
     all(() => sb.from("enrollments").select("id, program_id, learner_id, due_date_override, enrolled_at, learner:profiles(full_name, email, is_active, department, designation, market, manager)")),
     all(() => sb.from("v_enrollment_progress").select("*")),
     all(() => sb.from("program_steps").select("id, program_id, position, step_type, title, is_required, passing_score, session_start").order("position")),
@@ -167,8 +167,10 @@ function compute(d) {
   const inPeriod = (v) => v && (!start || new Date(v) >= start);
   const today = new Date(new Date().toDateString());
 
+  const clientOf = (p) => (p.client ?? "").trim() || NOT_SET;
   const programs = d.programs.filter((p) =>
     (filters.program ? p.id === filters.program : p.status !== "archived") &&
+    (!filters.client || clientOf(p) === filters.client) &&
     (!filters.type || p.program_type === filters.type));
   const programById = Object.fromEntries(programs.map((p) => [p.id, p]));
   const matches = (e) => Object.keys(GROUPS).every((k) => !filters[k] || (e.learner[k] || NOT_SET) === filters[k]);
@@ -215,7 +217,7 @@ function compute(d) {
     const scores = rows.map((r) => r.avgScore).filter((v) => v != null);
     const fb = feedbackOf(responses.filter((r) => stepById[r.step_id].program_id === p.id), d.scaleQs);
     return {
-      id: p.id, title: p.title, type: PROGRAM_TYPE[p.program_type], status: p.status, owner: p.owner?.full_name ?? "",
+      id: p.id, title: p.title, client: clientOf(p), type: PROGRAM_TYPE[p.program_type], status: p.status, owner: p.owner?.full_name ?? "",
       due: p.due_date, learners: rows.length,
       avgPct: rows.length ? Math.round(rows.reduce((a, r) => a + r.pct, 0) / rows.length) : 0,
       completed: rows.filter((r) => r.status === "Completed").length,
@@ -296,7 +298,13 @@ function compute(d) {
   const settled = (d.deliveries ?? []).filter((x) => x.status !== "needs_confirmation" && stepById[x.step_id] &&
     inPeriod(x.actual_start ?? stepById[x.step_id].session_start ?? null));
   const settledBy = Object.fromEntries(settled.map((x) => [x.step_id, x]));
-  const trainerHours = settled.reduce((a, x) => a + (Number(x.actual_minutes) / 60) * Math.max(1, (x.trainer_ids ?? []).length), 0);
+  const trainerHoursBy = {}, learnerMinutesBy = {};
+  for (const x of settled) {
+    const h = (Number(x.actual_minutes) / 60) * Math.max(1, (x.trainer_ids ?? []).length);
+    const pid = stepById[x.step_id].program_id;
+    trainerHoursBy[pid] = (trainerHoursBy[pid] ?? 0) + h;
+  }
+  const trainerHours = Object.values(trainerHoursBy).reduce((a, b) => a + b, 0);
   const excluded = new Set(d.exclusions.map((x) => `${x.enrollment_id}|${x.step_id}`));
   const enrolledByProgramEmail = {};
   for (const e of enrollments) enrolledByProgramEmail[`${e.program_id}|${String(e.learner.email ?? "").toLowerCase()}`] = e;
@@ -307,7 +315,9 @@ function compute(d) {
     if (!x || !r.email) continue;
     const e = enrolledByProgramEmail[`${stepById[r.step_id].program_id}|${r.email}`];
     if (!e || excluded.has(`${e.id}|${r.step_id}`)) continue;
-    learnerMinutes += Math.min(Number(r.minutes), Number(x.actual_minutes));
+    const m = Math.min(Number(r.minutes), Number(x.actual_minutes));
+    learnerMinutes += m;
+    learnerMinutesBy[stepById[r.step_id].program_id] = (learnerMinutesBy[stepById[r.step_id].program_id] ?? 0) + m;
     learnersTrained.add(e.learner_id);
   }
   const fmtHours = (h) => (h >= 100 ? Math.round(h).toLocaleString() : (Math.round(h * 10) / 10).toLocaleString());
@@ -315,6 +325,25 @@ function compute(d) {
     trainer: trainerHours, learner: learnerMinutes / 60, sessions: settled.length, learners: learnersTrained.size,
     trainerText: settled.length ? fmtHours(trainerHours) : "–", learnerText: settled.length ? fmtHours(learnerMinutes / 60) : "–",
   };
+
+  // --- By client / group supported ---
+  const clientRows = [...new Set(programs.map(clientOf))].map((name) => {
+    const progs = programs.filter((p) => clientOf(p) === name);
+    const ids = new Set(progs.map((p) => p.id));
+    const rows = learners.filter((l) => ids.has(l.programId));
+    const scores = rows.map((r) => r.avgScore).filter((x) => x != null);
+    const fb = feedbackOf(responses.filter((r) => ids.has(stepById[r.step_id].program_id)), d.scaleQs);
+    const sum = (o) => [...ids].reduce((a, id) => a + (o[id] ?? 0), 0);
+    return {
+      name, programs: progs.length, live: progs.filter((p) => p.status === "live").length,
+      learners: new Set(rows.map((r) => r.learnerId)).size, enrolments: rows.length,
+      avgPct: rows.length ? Math.round(rows.reduce((a, r) => a + r.pct, 0) / rows.length) : 0,
+      completed: rows.filter((r) => r.status === "Completed").length,
+      overdue: rows.filter((r) => r.status === "Overdue").length,
+      avgScore: scores.length ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : null,
+      rating: fb.rating, trainerHours: sum(trainerHoursBy), learnerHours: sum(learnerMinutesBy) / 60,
+    };
+  }).sort((a, b) => (a.name === NOT_SET) - (b.name === NOT_SET) || b.enrolments - a.enrolments || a.name.localeCompare(b.name));
 
   const kpis = [
     { label: "Live Programs", value: programs.filter((p) => p.status === "live").length, hint: `${programs.length} in view` },
@@ -384,7 +413,7 @@ function compute(d) {
       uploaded: u.uploaded_at, reviewedBy: u.reviewer?.full_name ?? "", reviewed: u.reviewed_at, comment: u.review_comment ?? "" };
   });
 
-  return { kpis, feedback, surveyRows, trend, programRows, groupRows, learners, stepRows, attemptRows, activityRows, uploadRows, start, statusMix, attention, summary };
+  return { kpis, feedback, surveyRows, trend, programRows, clientRows, groupRows, learners, stepRows, attemptRows, activityRows, uploadRows, start, statusMix, attention, summary };
 }
 
 // Count completions per day / week / month, depending on the period
@@ -458,6 +487,7 @@ export async function renderDashboard(main, ctx) {
     <div class="filter-bar">
       <span class="filter-label">${icons.filter}Filter</span>
       <div class="filter-chips">
+        <select class="chip-select" data-f="client" aria-label="Client or group"><option value="">All Clients / Groups</option></select>
         <select class="chip-select" data-f="program" aria-label="Program"><option value="">All Programs</option></select>
         <select class="chip-select" data-f="type" aria-label="Program type">
           <option value="">All Types</option>
@@ -485,6 +515,11 @@ export async function renderDashboard(main, ctx) {
   programSelect.title = "All programs except archived ones";
   programSelect.value = data.programs.some((p) => p.id === filters.program) ? filters.program : "";
   main.querySelector('[data-f="type"]').value = filters.type;
+  const clients = [...new Set(data.programs.map((p) => (p.client ?? "").trim() || NOT_SET))].sort((a, b) => (a === NOT_SET) - (b === NOT_SET) || a.localeCompare(b));
+  const clientSelect = main.querySelector('[data-f="client"]');
+  clientSelect.insertAdjacentHTML("beforeend", clients.map((c) => `<option>${esc(c)}</option>`).join(""));
+  if (!clients.includes(filters.client)) filters.client = "";
+  clientSelect.value = filters.client;
   for (const k of Object.keys(GROUPS)) {
     const used = [...new Set(data.enrollments.map((e) => e.learner[k] || NOT_SET))].sort((a, b) => (a === NOT_SET) - (b === NOT_SET) || a.localeCompare(b));
     const el = main.querySelector(`[data-f="${k}"]`);
@@ -759,7 +794,7 @@ function drawDashboard(box, v) {
     </div>
 
     <div class="tabs" style="margin-top:22px">
-      ${[["programs", "By Program"], ["learners", "By Learner"], ["department", "By Department"], ["designation", "By Designation"], ["market", "By Market"], ["manager", "By Manager"], ["steps", "By Step"]].map(([k, l]) =>
+      ${[["clients", "By Client"], ["programs", "By Program"], ["learners", "By Learner"], ["department", "By Department"], ["designation", "By Designation"], ["market", "By Market"], ["manager", "By Manager"], ["steps", "By Step"]].map(([k, l]) =>
         `<a href="#" data-view="${k}" class="${filters.view === k ? "active" : ""}">${l}</a>`).join("")}
     </div>
     <div id="dash-table"></div>`;
@@ -804,13 +839,30 @@ function drawTable(el, v) {
     return;
   }
 
+  if (filters.view === "clients") {
+    const hrs = (h) => (h ? (Math.round(h * 10) / 10).toLocaleString() : '<span class="muted">–</span>');
+    el.innerHTML = v.clientRows.length ? `
+      <div class="table-wrap"><table class="data clickable">
+        <thead><tr><th>Client / Group</th><th>Programs</th><th>Learners</th><th>Avg. Completion</th><th>Completed</th><th>Overdue</th><th>Avg. Score</th><th>Avg. Rating</th><th>Trainer Hours</th><th>Learner Hours</th></tr></thead>
+        <tbody>${v.clientRows.map((c) => `
+          <tr data-client="${esc(c.name)}"><td class="name"><strong>${esc(c.name)}</strong><span>${c.live} live</span></td><td>${c.programs}</td>
+            <td>${c.learners}</td><td>${meter(c.avgPct)}</td><td>${c.completed}</td><td>${c.overdue ? `<span class="pill crit">${c.overdue}</span>` : 0}</td>
+            <td>${pct(c.avgScore)}</td><td>${c.rating == null ? '<span class="muted">–</span>' : `★ ${c.rating}`}</td>
+            <td>${hrs(c.trainerHours)}</td><td>${hrs(c.learnerHours)}</td></tr>`).join("")}</tbody>
+      </table></div>
+      <p class="muted small" style="margin-top:8px">Click a row to see only that client across the whole dashboard. Hours are from live sessions with a confirmed Teams report.</p>`
+      : '<div class="empty"><div><strong>No Programs In View</strong>Change the filters above.</div></div>';
+    el.querySelectorAll("[data-client]").forEach((r) => r.addEventListener("click", () => pickGroup("client", r.dataset.client)));
+    return;
+  }
+
   if (filters.view === "programs") {
     el.innerHTML = v.programRows.length ? `
       <div class="table-wrap"><table class="data clickable">
-        <thead><tr><th>Program</th><th>Type</th><th>Status</th><th>Learners</th><th>Avg. Completion</th><th>Completed</th><th>Overdue</th><th>Avg. Score</th><th>Avg. Rating</th><th>NPS</th><th>Due Date</th></tr></thead>
+        <thead><tr><th>Program</th><th>Client / Group</th><th>Type</th><th>Status</th><th>Learners</th><th>Avg. Completion</th><th>Completed</th><th>Overdue</th><th>Avg. Score</th><th>Avg. Rating</th><th>NPS</th><th>Due Date</th></tr></thead>
         <tbody>${v.programRows.map((p) => `
           <tr data-open="${p.id}"><td class="name"><strong>${esc(p.title)}</strong><span>${esc(p.owner)}</span></td>
-            <td>${esc(p.type)}</td><td>${statusPill(p.status)}</td><td>${p.learners}</td><td>${meter(p.avgPct)}</td>
+            <td>${p.client === NOT_SET ? '<span class="muted">–</span>' : esc(p.client)}</td><td>${esc(p.type)}</td><td>${statusPill(p.status)}</td><td>${p.learners}</td><td>${meter(p.avgPct)}</td>
             <td>${p.completed}</td><td>${p.overdue ? `<span class="pill crit">${p.overdue}</span>` : 0}</td><td>${pct(p.avgScore)}</td>
             <td>${p.rating == null ? '<span class="muted">–</span>' : `★ ${p.rating}`}</td><td>${p.nps == null ? '<span class="muted">–</span>' : fmtNps(p.nps)}</td>
             <td>${esc(fmtDate(p.due))}</td></tr>`).join("")}</tbody>
@@ -867,6 +919,7 @@ function filterSummary(data) {
   const program = data.programs.find((p) => p.id === filters.program);
   return [
     ["Period", PERIODS[filters.period]],
+    ["Client / Group", filters.client || "All Clients / Groups"],
     ["Program", program ? program.title : "All Programs (Not Archived)"],
     ["Designation", filters.designation || "All Designations"],
     ["Type", filters.type ? PROGRAM_TYPE[filters.type] : "All Types"],
@@ -901,11 +954,17 @@ async function exportExcel(v, data, me) {
     ...v.feedback.map((k) => [k.label, k.value, k.hint]),
   ], [28, 22, 40, 24]);
 
+  sheet("By Client", v.clientRows.length ? v.clientRows.map((c) => ({
+    "Client / Group": c.name, Programs: c.programs, "Live Programs": c.live, Learners: c.learners, Enrolments: c.enrolments,
+    "Average Completion %": c.avgPct, Completed: c.completed, Overdue: c.overdue, "Average Score %": c.avgScore ?? "",
+    "Average Rating (1-5)": c.rating ?? "", "Trainer Hours Delivered": Math.round(c.trainerHours * 10) / 10, "Learner Hours Trained": Math.round(c.learnerHours * 10) / 10,
+  })) : [["No programs in view."]], [28, 10, 13, 10, 12, 20, 11, 9, 16, 18, 22, 20]);
+
   sheet("Programs", v.programRows.map((p) => ({
-    Program: p.title, Type: p.type, Status: PROGRAM_STATUS[p.status].label, Owner: p.owner, "Due Date": xDate(p.due),
+    Program: p.title, "Client / Group": p.client === NOT_SET ? "" : p.client, Type: p.type, Status: PROGRAM_STATUS[p.status].label, Owner: p.owner, "Due Date": xDate(p.due),
     Learners: p.learners, "Average Completion %": p.avgPct, Completed: p.completed, Overdue: p.overdue, "Average Score %": p.avgScore ?? "",
     "Average Rating (1-5)": p.rating ?? "", NPS: p.nps ?? "",
-  })), [34, 12, 12, 22, 12, 10, 20, 11, 9, 16, 18, 8]);
+  })), [34, 22, 12, 12, 22, 12, 10, 20, 11, 9, 16, 18, 8]);
 
   sheet("Survey Feedback", v.surveyRows.length ? v.surveyRows.map((r) => ({
     Program: r.program, Survey: r.title, "Learners Assigned": r.assigned, Responses: r.responses, "Response Rate %": r.rate,
@@ -984,7 +1043,7 @@ async function exportPdf(v, data, me) {
   doc.setFont("helvetica", "normal");
   doc.setFontSize(11);
   doc.setTextColor(200, 220, 232);
-  doc.text([scope, PERIODS[filters.period], filters.type && PROGRAM_TYPE[filters.type], filters.market, filters.department, filters.designation, filters.manager && `Manager: ${filters.manager}`].filter(Boolean).join("  |  "), M, 74);
+  doc.text([scope, filters.client && `Client: ${filters.client}`, PERIODS[filters.period], filters.type && PROGRAM_TYPE[filters.type], filters.market, filters.department, filters.designation, filters.manager && `Manager: ${filters.manager}`].filter(Boolean).join("  |  "), M, 74);
   doc.text(`Generated ${generated} by ${me.full_name}`, M, 92);
 
   // KPI tiles (4 per row)
@@ -1119,6 +1178,10 @@ async function exportPdf(v, data, me) {
     y = doc.lastAutoTable.finalY + 30;
   };
   const fmt = (n) => (n == null ? "–" : `${n}%`);
+  table("By Client / Group", ["Client / Group", "Programs", "Learners", "Avg. Completion", "Completed", "Overdue", "Avg. Score", "Trainer Hours", "Learner Hours"],
+    v.clientRows.map((c) => [c.name, c.programs, c.learners, `${c.avgPct}%`, c.completed, c.overdue, fmt(c.avgScore),
+      c.trainerHours ? (Math.round(c.trainerHours * 10) / 10).toLocaleString() : "–", c.learnerHours ? (Math.round(c.learnerHours * 10) / 10).toLocaleString() : "–"]),
+    { 0: { cellWidth: 130 } });
   table("Programs", ["Program", "Type", "Status", "Learners", "Avg. Completion", "Completed", "Overdue", "Avg. Score", "Rating", "NPS"],
     v.programRows.map((p) => [p.title, p.type, PROGRAM_STATUS[p.status].label, p.learners, `${p.avgPct}%`, p.completed, p.overdue, fmt(p.avgScore), p.rating == null ? "–" : `${p.rating}/5`, fmtNps(p.nps)]),
     { 0: { cellWidth: 150 } });
