@@ -604,7 +604,7 @@ function learnerStep(s, i, e) {
         ${sessionLine}
         ${s.description && st.key !== "locked" ? `<div class="step-desc">${esc(s.description)}</div>` : ""}
         <div class="step-flags">
-          <span class="pill ${stateClass}">${esc(st.label)}</span>${score}${duePill(info)}
+          <span class="pill ${stateClass}">${esc(st.label)}</span>${score}${duePill(info)}${s.standard_minutes && st.key !== "done" ? `<span class="pill">About ${s.standard_minutes >= 60 ? `${Math.floor(s.standard_minutes / 60)}h${s.standard_minutes % 60 ? ` ${s.standard_minutes % 60}m` : ""}` : `${s.standard_minutes}m`}</span>` : ""}
           ${s.step_type === "ilt_session" && open ? '<span class="muted small">Attendance is recorded by the Technical Training Team.</span>' : ""}
           ${st.key === "done" && p?.override_by ? '<span class="muted small">Marked completed by the Technical Training Team.</span>' : ""}
         </div>

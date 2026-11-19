@@ -239,3 +239,17 @@ export const icons = {
 };
 
 export const stepIcon = (type) => icons[type === "upload" ? "upload_step" : type] ?? icons.module;
+
+// Self-paced learning time credited for one learner's step (live sessions are counted separately).
+// Counts only completed steps: staff-confirmed minutes first; else, for a module taken in the tool,
+// the active time measured on its page, capped at twice the standard duration (8 hours with none).
+export function learningMinutes(step, progress, activeSeconds = 0) {
+  if (!step || step.step_type === "ilt_session" || step.step_type === "resource") return { minutes: 0, source: null };
+  if (!progress || progress.status !== "completed") return { minutes: 0, source: null };
+  if (progress.credited_minutes != null) return { minutes: Number(progress.credited_minutes), source: "confirmed" };
+  if (step.step_type === "module" && activeSeconds > 0) {
+    const cap = step.standard_minutes ? step.standard_minutes * 2 : 480;
+    return { minutes: Math.min(activeSeconds / 60, cap), source: "tracked" };
+  }
+  return { minutes: 0, source: step.standard_minutes ? "unconfirmed" : null };
+}

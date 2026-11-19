@@ -2,7 +2,7 @@
 import { sb } from "../supabase.js";
 import {
   esc, toast, openModal, icons, stepIcon, statusPill, fmtDate, fmtDateTime, toLocalInput, fromLocalInput,
-  PROGRAM_TYPE, TRAINING_TYPE, isProject, PROGRAM_STATUS, STEP_TYPE, LIBS, loadScript, downloadBlob, safeName,
+  PROGRAM_TYPE, TRAINING_TYPE, isProject, PROGRAM_STATUS, STEP_TYPE, LIBS, loadScript, downloadBlob, safeName, learningMinutes,
 } from "../ui.js";
 import { renderFormBuilder } from "./form-builder.js";
 import { renderFormResults } from "./form-results.js";
@@ -204,7 +204,7 @@ function duplicateProgram(program, me) {
           is_required: s.is_required, passing_score: s.passing_score, completion_text: s.completion_text,
           time_limit_minutes: s.time_limit_minutes, max_attempts: s.max_attempts, shuffle_questions: s.shuffle_questions,
           shuffle_options: s.shuffle_options, show_answers: s.show_answers, identity_mode: s.identity_mode, thank_you: s.thank_you,
-          max_files: s.max_files ?? 1, secure_mode: s.secure_mode ?? true,
+          max_files: s.max_files ?? 1, secure_mode: s.secure_mode ?? true, standard_minutes: s.standard_minutes ?? null,
         }).select("id").single();
         if (stepErr) throw stepErr;
         const url = linkOf(s);
@@ -708,6 +708,7 @@ function stepCard(s, i, total) {
     `Available ${s.unlock_at ? `from ${esc(fmtDateTime(s.unlock_at))}` : "when the program goes live"}`,
     s.close_at && `Closes ${esc(fmtDateTime(s.close_at))}`,
     s.due_at && `Due ${esc(fmtDateTime(s.due_at))}`,
+    s.standard_minutes && `Standard ${fmtMin(s.standard_minutes)}`,
   ].filter(Boolean);
   const flags = [
     needsLink && !url && (s.step_type === "survey" ? '<span class="pill crit">Not Set Up: Build It Or Add A Link</span>' : '<span class="pill crit">Link Missing</span>'),
@@ -793,6 +794,10 @@ function editStep(program, step, steps, reload) {
         </select>
         <span class="hint">How many files a learner can send for this step (PDF, PNG or JPG, up to 5 MB each). A trainer approves or returns them together.</span>
       </label>
+      <label class="field" data-for="module upload">Standard Duration (Minutes) <span class="hint">(Optional)</span>
+        <input class="input" type="number" name="standard_minutes" min="1" max="6000" step="1" value="${s.standard_minutes ?? ""}" placeholder="e.g. 120" style="max-width:160px">
+        <span class="hint">How long this learning normally takes. Modules taken in RCM Academy Hub count the learner's actual active time (up to twice this). For courses taken outside the tool, trainers confirm the hours when approving the certificate, starting from this number.</span>
+      </label>
       <div class="notice info" data-for="assessment survey">After saving, click <b>Build</b> on this step to add sections, questions, the timer and other settings.</div>
       <label class="check" data-for="module ilt_session assessment survey upload"><input type="checkbox" name="is_required" ${s.is_required ? "checked" : ""}> Counts Toward Completion</label>`,
     submitLabel: step ? "Save Step" : "Add Step",
@@ -825,7 +830,9 @@ function editStep(program, step, steps, reload) {
         completion_text: type === "module" ? f.completion_text.value.trim() || null : null,
         is_required: type === "resource" ? false : f.is_required.checked,
         max_files: type === "upload" ? Number(f.max_files.value) || 1 : 1,
+        standard_minutes: ["module", "upload"].includes(type) && Number(f.standard_minutes.value) > 0 ? Math.round(Number(f.standard_minutes.value)) : null,
       };
+      if (row.standard_minutes && row.standard_minutes > 6000) throw new Error("The standard duration can be up to 6000 minutes.");
 
       let stepId = step?.id;
       if (step) {
@@ -969,7 +976,7 @@ async function learnersTab(area, program, reload) {
       .select("id, learner_id, due_date_override, enrolled_at, learner:profiles(full_name, email, is_active, department, designation, market), enrollment_exclusions(step_id)")
       .eq("program_id", program.id),
     sb.from("v_enrollment_progress").select("enrollment_id, percent_complete, completed_steps, required_steps, last_activity").eq("program_id", program.id),
-    sb.from("program_steps").select("id, position, step_type, title, is_required").eq("program_id", program.id).order("position"),
+    sb.from("program_steps").select("*").eq("program_id", program.id).order("position"),
   ]);
   if (error) {
     area.innerHTML = `<div class="empty"><div><strong>Couldn't Load Learners</strong>${esc(error.message)}</div></div>`;
@@ -1038,12 +1045,22 @@ const OVERRIDE_REASONS = [
 ];
 
 async function stepStatus(enrollment, steps, reload) {
-  const [{ data: progress, error }, { data: pending }] = await Promise.all([
-    sb.from("step_progress").select("step_id, status, completed_at, override_at, override_reason, overrider:profiles!step_progress_override_by_fkey(full_name)").eq("enrollment_id", enrollment.id),
+  const [{ data: progress, error }, { data: pending }, { data: times }] = await Promise.all([
+    sb.from("step_progress").select("*, overrider:profiles!step_progress_override_by_fkey(full_name)").eq("enrollment_id", enrollment.id),
     sb.from("uploads").select("step_id").eq("enrollment_id", enrollment.id).eq("status", "pending"),
+    sb.from("step_time").select("step_id, active_seconds").eq("enrollment_id", enrollment.id),
   ]);
   if (error) return toast(error.message, "err");
   const byStep = Object.fromEntries((progress ?? []).map((p) => [p.step_id, p]));
+  const activeBy = Object.fromEntries((times ?? []).map((x) => [x.step_id, x.active_seconds]));
+  const hoursLine = (s) => {
+    const lm = learningMinutes(s, byStep[s.id], activeBy[s.id] ?? 0);
+    if (lm.source === "confirmed") return `Learning hours: ${fmtMin(lm.minutes)} (confirmed by staff)`;
+    if (lm.source === "tracked") return `Learning hours: ${fmtMin(lm.minutes)} (tracked in the tool)`;
+    if (lm.source === "unconfirmed") return `Learning hours: not confirmed yet (standard ${fmtMin(s.standard_minutes)})`;
+    return "";
+  };
+  const canCredit = (s) => !["ilt_session", "resource"].includes(s.step_type);
   const waiting = new Set((pending ?? []).map((u) => u.step_id));
   const removed = new Set((enrollment.enrollment_exclusions ?? []).map((x) => x.step_id));
   const mine = steps.filter((s) => !removed.has(s.id));
@@ -1062,20 +1079,51 @@ async function stepStatus(enrollment, steps, reload) {
           <span class="muted">${esc(STEP_TYPE[s.step_type].short)}${s.is_required ? "" : " · Optional"}</span>
           <span class="pill ${cls}">${label}</span>
           ${p?.override_reason ? `<span class="ss-why">${esc(p.overrider?.full_name ?? "Staff")} on ${esc(fmtDate(p.override_at))}: “${esc(p.override_reason)}”</span>` : ""}
+          ${key === "completed" && hoursLine(s) ? `<span class="ss-why">${esc(hoursLine(s))}</span>` : ""}
         </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end">
+        ${key === "completed" && canCredit(s) ? `<button type="button" class="btn sm" data-hours="${s.id}">${icons.clock} Hours</button>` : ""}
         ${key === "completed"
           ? `<button type="button" class="btn sm" data-set="${s.id}" data-done="0">Mark Not Completed</button>`
           : `<button type="button" class="btn sm primary" data-set="${s.id}" data-done="1">${icons.check} Mark Completed</button>`}
+        </div>
       </div>`;
     }).join("")}</div>` : '<div class="empty"><div><strong>No Steps</strong>This learner has no steps.</div></div>',
     submitLabel: "Close",
     cancelLabel: "",
   });
   form.querySelector(".ss-list")?.addEventListener("click", (ev) => {
+    const h = ev.target.closest("[data-hours]");
+    if (h) {
+      const s = mine.find((x) => x.id === h.dataset.hours);
+      const lm = learningMinutes(s, byStep[s.id], activeBy[s.id] ?? 0);
+      form.closest(".modal-backdrop").remove();
+      return confirmHours(enrollment, s, lm.minutes ? Math.round(lm.minutes) : s.standard_minutes ?? "", () => stepStatus(enrollment, steps, reload));
+    }
     const b = ev.target.closest("[data-set]");
     if (!b) return;
     form.closest(".modal-backdrop").remove();
     setStepStatus(enrollment, steps, mine.find((s) => s.id === b.dataset.set), b.dataset.done === "1", reload);
+  });
+}
+
+// Admin or a trainer confirms the learning hours credited for one learner's step
+export function confirmHours(enrollment, step, minutes, after) {
+  openModal({
+    title: `Learning Hours: ${step.title}`,
+    intro: `For <b>${esc(enrollment.learner.full_name)}</b>.${step.standard_minutes ? ` Standard duration: ${fmtMin(step.standard_minutes)}.` : ""} These hours count toward Learner Hours Trained on the Dashboard.`,
+    body: `<label class="field">Hours To Credit (Minutes)
+      <input class="input" type="number" name="mins" min="0" max="6000" step="1" value="${esc(minutes)}" style="max-width:160px">
+      <span class="hint">Leave empty to remove confirmed hours (a module taken in the tool then uses its tracked time).</span></label>`,
+    submitLabel: "Confirm Hours",
+    onSubmit: async (f) => {
+      const v = f.mins.value === "" ? null : Number(f.mins.value);
+      if (v != null && !(v >= 0 && v <= 6000)) throw new Error("Enter between 0 and 6000 minutes.");
+      const { error } = await sb.rpc("set_step_hours", { p_enrollment: enrollment.id, p_step: step.id, p_minutes: v });
+      if (error) throw error;
+      toast(v == null ? "Confirmed hours removed." : `${fmtMin(v)} confirmed for ${enrollment.learner.full_name}.`);
+      after?.();
+    },
   });
 }
 
@@ -1088,7 +1136,10 @@ function setStepStatus(enrollment, steps, step, completed, reload) {
       <label class="field">Reason
         <select class="select" name="why">${(completed ? OVERRIDE_REASONS : ["Marked Completed By Mistake", "Proof Not Accepted", "Other"]).map((r) => `<option>${esc(r)}</option>`).join("")}</select></label>
       <label class="field">Details <input class="input" name="details" placeholder="e.g. Certificate emailed to the Trainer on 12 Nov"></label>
-      ${completed ? `<label class="field">Completed On <input class="input" type="date" name="day" value="${today}" max="${today}" style="max-width:200px"></label>` : ""}`,
+      ${completed ? `<label class="field">Completed On <input class="input" type="date" name="day" value="${today}" max="${today}" style="max-width:200px"></label>` : ""}
+      ${completed && !["ilt_session", "resource"].includes(step.step_type) ? `<label class="field">Learning Hours To Credit (Minutes) <span class="hint">(Optional)</span>
+        <input class="input" type="number" name="mins" min="0" max="6000" step="1" value="${step.standard_minutes ?? ""}" style="max-width:160px">
+        <span class="hint">${step.standard_minutes ? `Starts from the standard duration (${fmtMin(step.standard_minutes)}). ` : ""}Counts toward Learner Hours Trained.</span></label>` : ""}`,
     submitLabel: completed ? "Mark Completed" : "Mark Not Completed",
     onSubmit: async (f) => {
       const details = f.details.value.trim();
@@ -1098,6 +1149,12 @@ function setStepStatus(enrollment, steps, step, completed, reload) {
         p_enrollment: enrollment.id, p_step: step.id, p_completed: completed, p_reason: reason, p_date: completed ? f.day.value || null : null,
       });
       if (error) throw error;
+      if (completed && f.mins && f.mins.value !== "") {
+        const v = Number(f.mins.value);
+        if (!(v >= 0 && v <= 6000)) throw new Error("Enter between 0 and 6000 minutes.");
+        const { error: hErr } = await sb.rpc("set_step_hours", { p_enrollment: enrollment.id, p_step: step.id, p_minutes: v });
+        if (hErr) throw hErr;
+      }
       toast(`${step.title}: marked ${completed ? "Completed" : "Not Completed"} for ${enrollment.learner.full_name}.`);
       reload();
       stepStatus(enrollment, steps, reload);

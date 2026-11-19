@@ -33,7 +33,7 @@ export async function renderReview(main) {
 
   const { data: uploads, error } = await sb.from("uploads")
     .select(`id, enrollment_id, step_id, file_path, file_name, size_bytes, status, review_comment, reviewed_at, uploaded_at,
-      step:program_steps(title),
+      step:program_steps(title, standard_minutes),
       reviewer:profiles!uploads_reviewed_by_fkey(full_name),
       enrollment:enrollments(program_id, program:programs(title), learner:profiles(full_name, email))`)
     .order("uploaded_at", { ascending: true });
@@ -118,12 +118,22 @@ export async function renderReview(main) {
   };
 
   main.querySelectorAll("[data-f]").forEach((el) => el.addEventListener("input", () => { filters[el.dataset.f] = el.value; draw(); }));
+  // Approving a certificate also credits the step's standard learning hours (the trainer can change them)
+  const creditHours = async (g, minutes) => {
+    if (minutes == null || minutes === "") return;
+    const { error: err } = await sb.rpc("set_step_hours", { p_enrollment: g.enrollment_id, p_step: g.step_id, p_minutes: Number(minutes) });
+    if (err) throw err;
+  };
+  const fmtM = (m) => { const n = Math.round(Number(m) || 0); return n >= 60 ? `${Math.floor(n / 60)}h${n % 60 ? ` ${n % 60}m` : ""}` : `${n}m`; };
+
   approveSelected.addEventListener("click", async () => {
     const ids = selected();
     approveSelected.disabled = true;
     try {
       await setStatus(ids, "approved");
-      toast(`${ids.length} file${ids.length === 1 ? "" : "s"} approved.`);
+      const chosen = groups.filter((g) => g.ids.some((id) => ids.includes(id)) && g.step?.standard_minutes);
+      for (const g of chosen) await creditHours(g, g.step.standard_minutes);
+      toast(`${ids.length} file${ids.length === 1 ? "" : "s"} approved.${chosen.length ? ` Standard learning hours credited for ${chosen.length}.` : ""}`);
       renderReview(main);
     } catch (err) { toast(err.message, "err"); syncSelected(); }
   });
@@ -142,9 +152,29 @@ export async function renderReview(main) {
       window.open(data.signedUrl, "_blank", "noopener");
     }
     if (approve) {
+      const g = groups.find((x) => x.key === approve.dataset.approve);
+      if (g.step?.standard_minutes) {
+        openModal({
+          title: `Approve: ${g.step.title}`,
+          intro: `For <b>${esc(g.enrollment.learner.full_name)}</b>. Confirm the learning hours to credit for this course. The standard duration is ${fmtM(g.step.standard_minutes)}.`,
+          body: `<label class="field">Hours To Credit (Minutes)
+            <input class="input" type="number" name="mins" min="0" max="6000" step="1" value="${g.step.standard_minutes}" style="max-width:160px">
+            <span class="hint">Change it if the certificate shows a different length. Counts toward Learner Hours Trained.</span></label>`,
+          submitLabel: "Approve And Credit Hours",
+          onSubmit: async (f) => {
+            const v = f.mins.value === "" ? null : Number(f.mins.value);
+            if (v != null && !(v >= 0 && v <= 6000)) throw new Error("Enter between 0 and 6000 minutes.");
+            await setStatus(g.ids, "approved");
+            await creditHours(g, v);
+            toast(`Approved${v != null ? ` with ${fmtM(v)} of learning credited` : ""}.`);
+            renderReview(main);
+          },
+        });
+        return;
+      }
       approve.disabled = true;
       try {
-        await setStatus(groups.find((g) => g.key === approve.dataset.approve).ids, "approved");
+        await setStatus(g.ids, "approved");
         toast("Approved. It now counts toward the learner's completion.");
         renderReview(main);
       } catch (err) { toast(err.message, "err"); approve.disabled = false; }

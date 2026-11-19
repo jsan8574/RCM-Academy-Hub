@@ -4,6 +4,7 @@ import { sb } from "../supabase.js";
 import {
   esc, toast, icons, fmtDate, statusPill, PROGRAM_TYPE, TRAINING_TYPE, PROGRAM_STATUS, STEP_TYPE,
   LIBS, loadScript, safeName,
+  learningMinutes,
 } from "../ui.js";
 
 const PERIODS = { week: "This Week", month: "This Month", quarter: "This Quarter", year: "This Year", all: "All Time" };
@@ -76,7 +77,7 @@ function watchLiveNow(box) {
 }
 
 async function loadData() {
-  const [programs, enrollments, progress, steps, stepProgress, attempts, uploads, threads, exclusions, responses, scaleQs, testEvents, deliveries, sessionRows] = await Promise.all([
+  const [programs, enrollments, progress, steps, stepProgress, attempts, uploads, threads, exclusions, responses, scaleQs, testEvents, deliveries, sessionRows, credited, stepTimes, standards] = await Promise.all([
     all(() => sb.from("programs").select("id, title, client, program_type, status, start_date, due_date, owner:profiles!programs_owner_id_fkey(full_name)").order("title")),
     all(() => sb.from("enrollments").select("id, program_id, learner_id, due_date_override, enrolled_at, learner:profiles(full_name, email, is_active, department, designation, market, manager)")),
     all(() => sb.from("v_enrollment_progress").select("*")),
@@ -91,9 +92,12 @@ async function loadData() {
     all(() => sb.from("assessment_events").select("attempt_id, kind, seconds_away, created_at").order("created_at")),
     all(() => sb.from("session_delivery").select("step_id, status, scheduled_minutes, actual_minutes, actual_start, trainer_ids")).catch(() => []),
     all(() => sb.from("session_attendance").select("step_id, email, minutes")).catch(() => []),
+    all(() => sb.from("step_progress").select("enrollment_id, step_id, credited_minutes").not("credited_minutes", "is", null)).catch(() => []),
+    all(() => sb.from("step_time").select("enrollment_id, step_id, active_seconds")).catch(() => []),
+    all(() => sb.from("program_steps").select("id, standard_minutes").not("standard_minutes", "is", null)).catch(() => []),
   ]);
   // Projects are task lists without learners; they live on Tasks & Hours, not here
-  return { programs: programs.filter((p) => p.program_type !== "project"), enrollments, progress, steps, stepProgress, attempts, uploads, threads, exclusions, responses, scaleQs, testEvents, deliveries, sessionRows };
+  return { programs: programs.filter((p) => p.program_type !== "project"), enrollments, progress, steps, stepProgress, attempts, uploads, threads, exclusions, responses, scaleQs, testEvents, deliveries, sessionRows, credited, stepTimes, standards };
 }
 
 function periodStart(key) {
@@ -320,10 +324,32 @@ function compute(d) {
     learnerMinutesBy[stepById[r.step_id].program_id] = (learnerMinutesBy[stepById[r.step_id].program_id] ?? 0) + m;
     learnersTrained.add(e.learner_id);
   }
+  // Self-paced learning: completed steps only, in the period (by completion date)
+  const creditedBy = Object.fromEntries((d.credited ?? []).map((x) => [`${x.enrollment_id}|${x.step_id}`, x.credited_minutes]));
+  const activeBy = Object.fromEntries((d.stepTimes ?? []).map((x) => [`${x.enrollment_id}|${x.step_id}`, x.active_seconds]));
+  const standardBy = Object.fromEntries((d.standards ?? []).map((x) => [x.id, x.standard_minutes]));
+  let selfTracked = 0, selfConfirmed = 0, selfWaiting = 0;
+  const selfMinutesBy = {};
+  for (const p of stepProgress) {
+    const s = stepById[p.step_id], e = enrollmentById[p.enrollment_id];
+    if (!s || !e || p.status !== "completed" || !inPeriod(p.completed_at) || excluded.has(`${e.id}|${s.id}`)) continue;
+    const key = `${e.id}|${s.id}`;
+    const lm = learningMinutes({ ...s, standard_minutes: standardBy[s.id] ?? null }, { ...p, credited_minutes: creditedBy[key] ?? null }, activeBy[key] ?? 0);
+    if (lm.source === "confirmed") selfConfirmed += lm.minutes;
+    if (lm.source === "tracked") selfTracked += lm.minutes;
+    if (lm.source === "unconfirmed") selfWaiting++;
+    if (lm.minutes) {
+      selfMinutesBy[s.program_id] = (selfMinutesBy[s.program_id] ?? 0) + lm.minutes;
+      learnersTrained.add(e.learner_id);
+    }
+  }
   const fmtHours = (h) => (h >= 100 ? Math.round(h).toLocaleString() : (Math.round(h * 10) / 10).toLocaleString());
+  const selfMinutes = selfTracked + selfConfirmed;
   const hours = {
-    trainer: trainerHours, learner: learnerMinutes / 60, sessions: settled.length, learners: learnersTrained.size,
-    trainerText: settled.length ? fmtHours(trainerHours) : "–", learnerText: settled.length ? fmtHours(learnerMinutes / 60) : "–",
+    trainer: trainerHours, live: learnerMinutes / 60, self: selfMinutes / 60, tracked: selfTracked / 60, confirmed: selfConfirmed / 60,
+    learner: (learnerMinutes + selfMinutes) / 60, sessions: settled.length, learners: learnersTrained.size, waiting: selfWaiting,
+    trainerText: settled.length ? fmtHours(trainerHours) : "–",
+    learnerText: settled.length || selfMinutes ? fmtHours((learnerMinutes + selfMinutes) / 60) : "–",
   };
 
   // --- By client / group supported ---
@@ -341,7 +367,7 @@ function compute(d) {
       completed: rows.filter((r) => r.status === "Completed").length,
       overdue: rows.filter((r) => r.status === "Overdue").length,
       avgScore: scores.length ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : null,
-      rating: fb.rating, trainerHours: sum(trainerHoursBy), learnerHours: sum(learnerMinutesBy) / 60,
+      rating: fb.rating, trainerHours: sum(trainerHoursBy), learnerHours: (sum(learnerMinutesBy) + sum(selfMinutesBy)) / 60,
     };
   }).sort((a, b) => (a.name === NOT_SET) - (b.name === NOT_SET) || b.enrolments - a.enrolments || a.name.localeCompare(b.name));
 
@@ -355,7 +381,10 @@ function compute(d) {
       hint: attemptsInPeriod.length ? `${Math.round((attemptsInPeriod.filter((t) => t.passed).length / attemptsInPeriod.length) * 100)}% pass rate, ${attemptsInPeriod.length} attempts` : `No attempts ${PERIODS[filters.period].toLowerCase()}` },
     { label: "Overdue Learners", value: learners.filter((l) => l.status === "Overdue").length, hint: `${learners.filter((l) => l.status === "Due Soon").length} due within 7 days`, tone: "crit" },
     { label: "Trainer Hours Delivered", value: hours.trainerText, hint: `${plural(hours.sessions, "live session")} ${PERIODS[filters.period].toLowerCase()} (Teams reports)` },
-    { label: "Learner Hours Trained", value: hours.learnerText, hint: `${plural(hours.learners, "enrolled learner")} in live sessions` },
+    { label: "Learner Hours Trained", value: hours.learnerText, hint: `${plural(hours.learners, "enrolled learner")}, live + self-paced` },
+    { label: "Learner Hours: Live Sessions", value: settled.length ? fmtHours(hours.live) : "–", hint: "from confirmed Teams reports" },
+    { label: "Learner Hours: Self-Paced", value: selfMinutes ? fmtHours(hours.self) : "–",
+      hint: `${fmtHours(hours.tracked)} tracked in the tool, ${fmtHours(hours.confirmed)} confirmed by staff${selfWaiting ? `; ${selfWaiting} waiting for confirmation` : ""}` },
     { label: "Waiting For Review", value: uploads.filter((u) => u.status === "pending").length, hint: `${d.threads.filter((t) => t.status === "open" && (!t.program_id || programById[t.program_id])).length} open messages`, tone: "warn" },
   ];
 
@@ -754,9 +783,9 @@ function drawDashboard(box, v) {
           <div><b>${s.finished}</b><span>Learners Completed</span></div>
           <div><b>${s.fb.rating ?? "–"}</b><span>Average Rating</span></div>
           <div title="Delivered live-session time for each trainer who ran it, from confirmed Teams reports"><b>${s.hours.trainerText}</b><span>Trainer Hours Delivered</span></div>
-          <div title="Time enrolled learners spent in live sessions, from confirmed Teams reports"><b>${s.hours.learnerText}</b><span>Learner Hours Trained</span></div>
+          <div title="Live sessions: ${(Math.round(s.hours.live * 10) / 10).toLocaleString()} h · Self-paced: ${(Math.round(s.hours.self * 10) / 10).toLocaleString()} h"><b>${s.hours.learnerText}</b><span>Learner Hours Trained</span></div>
         </div>
-        <p class="hero-note">Hours are from live sessions with a confirmed Teams report.</p>
+        <p class="hero-note">Learner hours = live sessions (confirmed Teams reports) + self-paced learning (tracked in the tool or confirmed by staff).${s.hours.waiting ? ` ${plural(s.hours.waiting, "completed step")} waiting for hours confirmation.` : ""}</p>
       </div>
       <div class="dash-hero-ring">
         <div class="ring anim hero-ring" style="--p:${s.avgPct}"><span><b>${s.avgPct}%</b>Average Completion</span></div>
