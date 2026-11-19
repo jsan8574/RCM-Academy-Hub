@@ -58,7 +58,7 @@ export async function renderPeople(main, ctx) {
 async function load(main) {
   const { data, error } = await sb
     .from("profiles")
-    .select("id, email, full_name, role, is_active, must_change_password, user_id, created_at, department, designation, market, manager")
+    .select("id, email, full_name, role, is_active, must_change_password, user_id, created_at, department, designation, market, manager, manager_email")
     .order("full_name");
   if (error) {
     main.querySelector("#people-list").innerHTML =
@@ -244,6 +244,8 @@ function detailFields(p = {}) {
         <input class="input" name="market_other" placeholder="Type the market" value="${other ? esc(p.market) : ""}" ${other ? "" : "hidden"} style="margin-top:6px">
       </label>
       <label class="field">Reporting Manager <input class="input" name="manager" value="${esc(p.manager ?? "")}" list="dl-mgr" autocomplete="off"></label>
+      <label class="field">Manager Email (Optional) <input class="input" type="email" name="manager_email" value="${esc(p.manager_email ?? "")}" autocomplete="off">
+        <span class="hint">Copied on missed live session emails.</span></label>
     </div>
     ${datalist("dl-dept", "department")}${datalist("dl-desig", "designation")}${datalist("dl-mgr", "manager")}`;
 }
@@ -266,7 +268,9 @@ function readDetails(f, required) {
     designation: f.designation.value.trim() || null,
     market: (f.market_pick.value === "other" ? cleanMarket(f.market_other.value) : f.market_pick.value) || null,
     manager: f.manager.value.trim() || null,
+    manager_email: f.manager_email.value.trim().toLowerCase() || null,
   };
+  if (d.manager_email && !EMAIL_RE.test(d.manager_email)) throw new Error("Please check the Manager Email.");
   if (required) {
     const missing = Object.entries({ department: "Department", designation: "Designation", market: "Market", manager: "Reporting Manager" })
       .filter(([k]) => !d[k]).map(([, l]) => l);
@@ -320,9 +324,10 @@ function addPerson(main) {
 
 // ---------------------------------------------------------------------
 // Add many: paste rows from Excel
-// Full Name | Email | Department | Designation | Market | Reporting Manager
+// Full Name | Email | Department | Designation | Market | Reporting Manager | Manager Email (optional)
 // ---------------------------------------------------------------------
-const BULK_COLUMNS = ["Full Name", "Email", "Department", "Designation", "Market", "Reporting Manager"];
+const BULK_COLUMNS = ["Full Name", "Email", "Department", "Designation", "Market", "Reporting Manager", "Manager Email (Optional)"];
+const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
 function addMany(main) {
   const { form } = openModal({
@@ -343,15 +348,16 @@ function addMany(main) {
         .filter((l) => !/^full name\b/i.test(l)); // skip a pasted header row
       const parsed = lines.map((line) => {
         const parts = (line.includes("\t") ? line.split("\t") : line.split(/,|;/)).map((x) => x.trim());
-        const [full_name = "", email = "", department = "", designation = "", market = "", manager = ""] = parts;
-        return { line, full_name, email: email.toLowerCase(), department, designation, market: cleanMarket(market), manager };
+        const [full_name = "", email = "", department = "", designation = "", market = "", manager = "", manager_email = ""] = parts;
+        return { line, full_name, email: email.toLowerCase(), department, designation, market: cleanMarket(market), manager, manager_email: manager_email.toLowerCase() };
       });
       if (!parsed.length) throw new Error("Paste at least one line.");
       const learners = f.role.value === "learner";
       const bad = parsed.filter((p) => !p.full_name || !p.email.includes("@") ||
+        (p.manager_email && !EMAIL_RE.test(p.manager_email)) ||
         (learners && !(p.department && p.designation && p.market && p.manager)));
       if (bad.length) {
-        throw new Error(`These lines are missing ${learners ? "a column" : "a name or email"}: ${bad.slice(0, 5).map((b) => `"${b.line.replace(/\t/g, " | ")}"`).join(", ")}${bad.length > 5 ? ` and ${bad.length - 5} more` : ""}`);
+        throw new Error(`These lines are missing ${learners ? "a column" : "a name or email"} or have a wrong Manager Email: ${bad.slice(0, 5).map((b) => `"${b.line.replace(/\t/g, " | ")}"`).join(", ")}${bad.length > 5 ? ` and ${bad.length - 5} more` : ""}`);
       }
 
       const submit = f.querySelector('[type="submit"]');
@@ -361,8 +367,8 @@ function addMany(main) {
         const password = generatePassword();
         try {
           const { profile_id } = await manageAccount({ action: "create", full_name: person.full_name, email: person.email, role: f.role.value, password, send_email: f.send_email.checked });
-          const { department, designation, market, manager } = person;
-          await saveDetails(profile_id, { department: department || null, designation: designation || null, market: market || null, manager: manager || null });
+          const { department, designation, market, manager, manager_email } = person;
+          await saveDetails(profile_id, { department: department || null, designation: designation || null, market: market || null, manager: manager || null, manager_email: manager_email || null });
           results.push({ ...person, password, ok: true });
         } catch (err) {
           results.push({ ...person, ok: false, reason: err.message });
@@ -379,8 +385,8 @@ function addMany(main) {
 async function downloadTemplate() {
   await loadScript(LIBS.xlsx);
   const X = window.XLSX;
-  const ws = X.utils.aoa_to_sheet([BULK_COLUMNS, ["Juan Dela Cruz", "juan.delacruz@healthreconconnect.com", "Operations", "Team Lead", "Philippines", "Maria Santos"]]);
-  ws["!cols"] = [26, 36, 22, 22, 14, 24].map((w) => ({ wch: w }));
+  const ws = X.utils.aoa_to_sheet([BULK_COLUMNS, ["Juan Dela Cruz", "juan.delacruz@healthreconconnect.com", "Operations", "Team Lead", "Philippines", "Maria Santos", "maria.santos@healthreconconnect.com"]]);
+  ws["!cols"] = [26, 36, 22, 22, 14, 24, 36].map((w) => ({ wch: w }));
   const lists = X.utils.aoa_to_sheet([["Markets"], ...MARKETS.map((m) => [m]), ["(or type another market)"]]);
   const wb = X.utils.book_new();
   X.utils.book_append_sheet(wb, ws, "People");
@@ -407,8 +413,8 @@ function showBulkResults(results) {
   });
   form.querySelector("[data-download]")?.addEventListener("click", () => {
     downloadCsv(`growthpoint-sign-in-details-${new Date().toLocaleDateString("en-CA")}.csv`, [
-      ["Full Name", "Email", "Temporary Password", "Link", "Department", "Designation", "Market", "Reporting Manager"],
-      ...created.map((r) => [r.full_name, r.email, r.password, portalUrl(), r.department, r.designation, r.market, r.manager]),
+      ["Full Name", "Email", "Temporary Password", "Link", "Department", "Designation", "Market", "Reporting Manager", "Manager Email"],
+      ...created.map((r) => [r.full_name, r.email, r.password, portalUrl(), r.department, r.designation, r.market, r.manager, r.manager_email]),
     ]);
   });
 }
