@@ -10,6 +10,7 @@ import { renderDashboard } from "./pages/dashboard.js";
 import { renderTasksDashboard } from "./pages/tasks-dashboard.js";
 import { renderActivityLog } from "./pages/activity-log.js";
 import { renderLeaderReviews } from "./pages/program-reviews.js";
+import { renderCalendar } from "./pages/calendar.js";
 
 const root = document.getElementById("root");
 const MIN_PASSWORD = 8;
@@ -22,6 +23,7 @@ const PAGES = {
   home:      { title: "My Learning",  icon: icons.home,      roles: ["learner"], render: renderLearning },
   dashboard: { title: "Dashboard",    icon: icons.dashboard, roles: STAFF,       render: renderDashboard },
   programs:  { title: "Programs",     icon: icons.programs,  roles: STAFF,       render: renderPrograms },
+  calendar:  { title: "Calendar",     icon: icons.calendar,  roles: STAFF,       render: renderCalendar },
   tasks:     { title: "Tasks & Hours", icon: icons.tasks,    roles: STAFF,       render: renderTasksDashboard },
   reviews:   { title: "Program Reviews", icon: icons.approve, roles: ["leader"], render: renderLeaderReviews },
   review:    { title: "Review Queue", icon: icons.review,    roles: STAFF,       render: renderReview, badge: "review" },
