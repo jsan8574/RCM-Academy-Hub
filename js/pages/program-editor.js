@@ -204,6 +204,7 @@ function duplicateProgram(program, me) {
           is_required: s.is_required, passing_score: s.passing_score, completion_text: s.completion_text,
           time_limit_minutes: s.time_limit_minutes, max_attempts: s.max_attempts, shuffle_questions: s.shuffle_questions,
           shuffle_options: s.shuffle_options, show_answers: s.show_answers, identity_mode: s.identity_mode, thank_you: s.thank_you,
+          ...(s.answers_release ? { answers_release: s.answers_release, total_items: s.total_items ?? null } : {}),
           max_files: s.max_files ?? 1, secure_mode: s.secure_mode ?? true, standard_minutes: s.standard_minutes ?? null,
         }).select("id").single();
         if (stepErr) throw stepErr;
@@ -214,7 +215,8 @@ function duplicateProgram(program, me) {
         const sectionIds = {};
         const sectionRows = (s.form_sections ?? []).map((sec) => {
           sectionIds[sec.id] = crypto.randomUUID();
-          return { id: sectionIds[sec.id], step_id: newStep.id, position: sec.position, title: sec.title, description: sec.description };
+          return { id: sectionIds[sec.id], step_id: newStep.id, position: sec.position, title: sec.title, description: sec.description,
+            ...(sec.ask_count != null ? { ask_count: sec.ask_count } : {}) };
         });
         if (sectionRows.length) await sb.from("form_sections").insert(sectionRows);
         const keyRows = [];
@@ -225,6 +227,7 @@ function duplicateProgram(program, me) {
           return {
             id, step_id: newStep.id, section_id: sectionIds[q.section_id] ?? null, position: q.position, qtype: q.qtype,
             question: q.question, description: q.description, options: q.options, points: q.points, required: q.required,
+            ...(q.match_choices || q.layout ? { match_choices: q.match_choices ?? null, layout: q.layout ?? null } : {}),
           };
         });
         if (questionRows.length) await sb.from("assessment_questions").insert(questionRows);

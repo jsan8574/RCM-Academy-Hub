@@ -6,9 +6,33 @@ import { sb } from "../supabase.js";
 import { brand,
   esc, toast, openModal, icons, toLocalInput, fromLocalInput, QTYPE, LIKERT, LIBS, loadScript,
 } from "../ui.js";
+import { buildCrossword, gridCells, normWord } from "../crossword.js";
 
 const uid = () => crypto.randomUUID();
 const MAX_CHOICES = 10;
+const MAX_PAIRS = 15;
+const PAIRED = ["matching", "crossword"];
+const blankPairs = (n = 3) => Array.from({ length: n }, () => ({ term: "", def: "" }));
+
+// Suggested questions per section for a Total Items number: in proportion to each section's
+// questions, at least 1 each when there's room, never more than a section has
+export function suggestSplit(sizes, total) {
+  const pool = sizes.reduce((a, b) => a + b, 0);
+  if (!total || total >= pool) return sizes.slice();
+  const out = sizes.map(() => 0);
+  const withQs = sizes.map((n, i) => (n > 0 ? i : -1)).filter((i) => i >= 0);
+  let left = total;
+  if (total >= withQs.length) { withQs.forEach((i) => { out[i] = 1; }); left -= withQs.length; }
+  const rest = sizes.map((n, i) => n - out[i]);
+  const restPool = rest.reduce((a, b) => a + b, 0);
+  const exact = rest.map((n) => (restPool ? (n * left) / restPool : 0));
+  exact.forEach((x, i) => { out[i] += Math.floor(x); });
+  let short = total - out.reduce((a, b) => a + b, 0);
+  const order = exact.map((x, i) => [x - Math.floor(x), i]).sort((a, b) => b[0] - a[0] || a[1] - b[1]);
+  for (const [, i] of order) { if (short <= 0) break; if (out[i] < sizes[i]) { out[i] += 1; short -= 1; } }
+  for (let i = 0; short > 0 && i < sizes.length; i++) { while (short > 0 && out[i] < sizes[i]) { out[i] += 1; short -= 1; } }
+  return out;
+}
 
 export async function renderFormBuilder(main, program, stepId) {
   main.innerHTML = '<div class="empty" style="margin-top:24px"><div>Loading…</div></div>';
@@ -34,12 +58,23 @@ export async function renderFormBuilder(main, program, stepId) {
   };
   const toQ = (q) => {
     const key = keyOf(q);
+    if (q.qtype === "matching") {
+      const defs = q.match_choices ?? [];
+      return { id: q.id, qtype: "matching", question: q.question ?? "", description: q.description ?? "", options: [], correct: [], accepted: "",
+        pairs: (q.options ?? []).map((term, i) => ({ term, def: defs[key[i]] ?? "" })), display: q.layout?.display ?? "dropdown",
+        points: Number(q.points ?? 1), required: q.required ?? true };
+    }
+    if (q.qtype === "crossword") {
+      return { id: q.id, qtype: "crossword", question: q.question ?? "", description: q.description ?? "", options: [], correct: [], accepted: "",
+        pairs: (q.options ?? []).map((def, i) => ({ term: key[i] ?? "", def })), display: "dropdown",
+        points: Number(q.points ?? 1), required: q.required ?? true };
+    }
     return {
       id: q.id, qtype: q.qtype ?? "single", question: q.question ?? "", description: q.description ?? "",
       options: q.qtype === "truefalse" ? ["True", "False"] : [...(q.options ?? [])],
       correct: q.qtype === "short" ? [] : key.map(Number),
       accepted: q.qtype === "short" ? key.join("; ") : "",
-      points: Number(q.points ?? 1), required: q.required ?? true,
+      points: Number(q.points ?? 1), required: q.required ?? true, pairs: blankPairs(), display: "dropdown",
     };
   };
   const state = {
@@ -48,23 +83,25 @@ export async function renderFormBuilder(main, program, stepId) {
       unlock_at: toLocalInput(step.unlock_at), close_at: toLocalInput(step.close_at),
       time_limit_minutes: step.time_limit_minutes ?? "", max_attempts: step.max_attempts ?? "",
       passing_score: step.passing_score ?? "", shuffle_questions: step.shuffle_questions, shuffle_options: step.shuffle_options,
-      show_answers: step.show_answers, identity_mode: step.identity_mode ?? "choose", thank_you: step.thank_you ?? "",
+      answers_release: step.answers_release ?? (step.show_answers ? "after_submit" : "manual"),
+      total_items: step.total_items ?? "", identity_mode: step.identity_mode ?? "choose", thank_you: step.thank_you ?? "",
       secure_mode: step.secure_mode ?? true,
     },
-    sections: (sections ?? []).map((s) => ({ id: s.id, title: s.title ?? "", description: s.description ?? "", questions: [] })),
+    sections: (sections ?? []).map((s) => ({ id: s.id, title: s.title ?? "", description: s.description ?? "", ask: s.ask_count ?? null, questions: [] })),
   };
   const loose = [];
   for (const q of questions ?? []) {
     const sec = state.sections.find((s) => s.id === q.section_id);
     (sec ? sec.questions : loose).push(toQ(q));
   }
-  if (loose.length || !state.sections.length) state.sections.unshift({ id: null, title: "", description: "", questions: loose });
+  if (loose.length || !state.sections.length) state.sections.unshift({ id: null, title: "", description: "", ask: null, questions: loose });
   const savedIds = { sections: new Set((sections ?? []).map((s) => s.id)), questions: new Set((questions ?? []).map((q) => q.id)) };
   let dirty = false;
 
   const newQuestion = (qtype = isQuiz ? "single" : "rating") => ({
-    id: null, qtype, question: "", description: "", options: QTYPE[qtype].choices ? ["", ""] : qtype === "truefalse" ? ["True", "False"] : [],
-    correct: [], accepted: "", points: 1, required: true,
+    id: null, qtype, question: qtype === "matching" ? "Match each term to its definition." : qtype === "crossword" ? "Complete the crossword." : "",
+    description: "", options: QTYPE[qtype].choices ? ["", ""] : qtype === "truefalse" ? ["True", "False"] : [],
+    correct: [], accepted: "", points: PAIRED.includes(qtype) ? 3 : 1, required: true, pairs: blankPairs(), display: "dropdown",
   });
 
   // ---------------- Page ----------------
@@ -115,10 +152,26 @@ export async function renderFormBuilder(main, program, stepId) {
             <div class="field span-2 toggles">
               <label class="check"><input type="checkbox" data-set="shuffle_questions" ${s.shuffle_questions ? "checked" : ""}> Shuffle Questions <span class="hint">(within each section)</span></label>
               <label class="check"><input type="checkbox" data-set="shuffle_options" ${s.shuffle_options ? "checked" : ""}> Shuffle Answer Choices</label>
-              <label class="check"><input type="checkbox" data-set="show_answers" ${s.show_answers ? "checked" : ""}> Show Correct Answers After Submitting</label>
               <label class="check"><input type="checkbox" data-set="secure_mode" ${s.secure_mode ? "checked" : ""}> Secure Test Mode
                 <span class="hint">(full screen, no copying, blurs when learners leave, submits automatically after 3 exits, and records every exit in Results)</span></label>
-            </div>` : `
+            </div>
+            <details class="field span-2 fb-more" ${s.total_items !== "" || s.answers_release === "after_submit" ? "open" : ""}>
+              <summary>Question Pool &amp; Answers</summary>
+              <div class="fb-pool">
+                <label class="field">Total Items
+                  <input class="input" type="number" min="1" max="500" data-set="total_items" value="${esc(s.total_items)}" placeholder="All questions" style="max-width:160px">
+                </label>
+                <div data-poolnote></div>
+                <div class="field">Release Correct Answers
+                  <label class="check"><input type="radio" name="answers_release" data-set="answers_release" value="manual" ${s.answers_release !== "after_submit" ? "checked" : ""}> When I Release Them</label>
+                  <label class="check"><input type="radio" name="answers_release" data-set="answers_release" value="after_submit" ${s.answers_release === "after_submit" ? "checked" : ""}> Right After Submitting</label>
+                </div>
+                <details class="fb-help"><summary>How this works</summary>
+                  <p>Total Items: each learner gets this many questions, picked at random from each section, so learners get different questions. Leave empty to give everyone every question.</p>
+                  <p>Learners only see the correct answers in a protected Review Answers window, and never while they still have attempts left. Release them from Results.</p>
+                </details>
+              </div>
+            </details>` : `
             <label class="field">Learner Names
               <select class="select" data-set="identity_mode">
                 <option value="choose" ${s.identity_mode === "choose" ? "selected" : ""}>Learner Chooses</option>
@@ -131,7 +184,44 @@ export async function renderFormBuilder(main, program, stepId) {
       </section>`;
   };
 
+  const crosswordPreview = (q) => {
+    const words = q.pairs.map((p) => p.term);
+    const L = buildCrossword(words);
+    if (!L.words.length) return "";
+    const cells = gridCells(L, words);
+    let html = "";
+    for (let r = 0; r < L.rows; r++) for (let c = 0; c < L.cols; c++) {
+      const cell = cells.get(`${r},${c}`);
+      html += cell ? `<span class="cw-mini on">${cell.n ? `<i>${cell.n}</i>` : ""}${esc(cell.letter)}</span>` : '<span class="cw-mini"></span>';
+    }
+    return `<div class="cw-mini-grid" style="grid-template-columns:repeat(${L.cols}, 18px)">${html}</div>`;
+  };
+
+  const pairsEditor = (q) => {
+    const cross = q.qtype === "crossword";
+    return `<div class="fb-pairs">
+      <div class="fb-pair head"><span>${cross ? "Answer (Word)" : "Term"}</span><span>${cross ? "Clue (Definition)" : "Definition"}</span><span></span></div>
+      ${q.pairs.map((p, pi) => `
+        <div class="fb-pair">
+          <input class="input" data-pair="${pi}" data-pf="term" value="${esc(p.term)}" placeholder="${cross ? "e.g. Copay" : "e.g. Copay"}">
+          <input class="input" data-pair="${pi}" data-pf="def" value="${esc(p.def)}" placeholder="${cross ? "e.g. A fixed amount paid at each visit" : "e.g. A fixed amount paid at each visit"}">
+          <button type="button" class="btn sm ghost icon" data-act="del-pair" data-p="${pi}" ${q.pairs.length <= 2 ? "disabled" : ""} aria-label="Remove row">×</button>
+        </div>`).join("")}
+      <div class="fb-pair-foot">
+        ${q.pairs.length < MAX_PAIRS ? '<button type="button" class="link-btn dark" data-act="add-pair">+ Add Row</button>' : ""}
+        ${cross ? "" : `<label class="field fb-inline">Show As
+          <select class="select" data-qf="display">
+            <option value="dropdown" ${q.display !== "lines" ? "selected" : ""}>Dropdowns</option>
+            <option value="lines" ${q.display === "lines" ? "selected" : ""}>Draw Lines</option>
+          </select></label>`}
+      </div>
+      <span class="hint">${cross ? "Spaces and dashes in answers are removed in the grid. Learners get part of the points for each word they get right." : "Learners get part of the points for each correct match. Phones always show dropdowns."}</span>
+      ${cross ? `<div data-cwprev>${crosswordPreview(q)}</div>` : ""}
+    </div>`;
+  };
+
   const choiceEditor = (q, si, qi) => {
+    if (PAIRED.includes(q.qtype)) return pairsEditor(q);
     if (q.qtype === "truefalse") {
       return `<div class="fb-options">${["True", "False"].map((o, oi) => `
         <label class="fb-option"><input type="radio" name="c-${si}-${qi}" data-correct="${oi}" ${q.correct[0] === oi ? "checked" : ""}> <span>${o}</span></label>`).join("")}
@@ -194,6 +284,7 @@ export async function renderFormBuilder(main, program, stepId) {
         <section class="card fb-section" data-s="${si}">
           <div class="fb-section-head">
             <span class="fb-section-tag">Section ${si + 1}</span>
+            ${isQuiz && state.settings.total_items !== "" ? `<label class="fb-ask">Ask <input class="input" type="number" min="0" max="${sec.questions.length}" data-ask value="${sec.ask ?? sec.questions.length}"> of ${sec.questions.length}</label>` : ""}
             <span class="fb-tools">
               <button type="button" class="btn sm ghost icon" data-act="s-up" ${si === 0 ? "disabled" : ""} aria-label="Move section up">${icons.up}</button>
               <button type="button" class="btn sm ghost icon" data-act="s-down" ${si === state.sections.length - 1 ? "disabled" : ""} aria-label="Move section down">${icons.down}</button>
@@ -208,6 +299,34 @@ export async function renderFormBuilder(main, program, stepId) {
           <button type="button" class="btn" data-act="add-q">${icons.plus} Add Question</button>
         </section>`).join("")}
       <button type="button" class="btn add-section" data-act="add-s">${icons.plus} Add Section</button>`;
+    drawPoolNote();
+  };
+
+  // Total Items: what each learner gets, and the suggested split per section
+  const poolSizes = () => state.sections.map((sec) => sec.questions.length);
+  const drawPoolNote = () => {
+    const el = box.querySelector("[data-poolnote]");
+    if (!el) return;
+    const total = state.settings.total_items === "" ? null : Number(state.settings.total_items);
+    const sizes = poolSizes();
+    const pool = sizes.reduce((a, b) => a + b, 0);
+    if (!total) { el.innerHTML = ""; return; }
+    if (total > pool) { el.innerHTML = `<div class="fb-pool-card warn">Only ${pool} question${pool === 1 ? "" : "s"} so far. Add ${total - pool} more or lower Total Items.</div>`; return; }
+    const asks = state.sections.map((sec) => sec.ask ?? sec.questions.length);
+    const sum = asks.reduce((a, b) => a + b, 0);
+    const named = (sec, i) => esc(sec.title || `Section ${i + 1}`);
+    const mixed = state.sections.filter((sec, i) => asks[i] < sec.questions.length && new Set(sec.questions.map((q) => Number(q.points))).size > 1);
+    if (sum === total) {
+      el.innerHTML = `<div class="fb-pool-card ok">Each learner gets <b>${total} random question${total === 1 ? "" : "s"}</b> from ${pool}.
+        ${state.sections.length > 1 ? `<div class="fb-split">${state.sections.map((sec, i) => `<span>${named(sec, i)}: <b>${asks[i]}</b> of ${sec.questions.length}</span>`).join("")}</div>` : ""}
+        ${mixed.length ? `<div class="hint">${mixed.map((sec) => named(sec, state.sections.indexOf(sec))).join(", ")} mixes point values, so some learners may get more points to earn.</div>` : ""}</div>`;
+      return;
+    }
+    const sug = suggestSplit(sizes, total);
+    el.innerHTML = `<div class="fb-pool-card">Each learner gets <b>${total} random question${total === 1 ? "" : "s"}</b> from ${pool}. Suggested split:
+      <div class="fb-split">${state.sections.map((sec, i) => `<span>${named(sec, i)}: <b>${sug[i]}</b> of ${sec.questions.length}</span>`).join("")}</div>
+      <div class="fb-pool-actions"><button type="button" class="btn sm primary" data-act="use-split">Use This</button>
+        <span class="hint">Or set "Ask" on each section (now ${sum} of ${total}).</span></div></div>`;
   };
 
   // ---------------- Editing ----------------
@@ -223,13 +342,40 @@ export async function renderFormBuilder(main, program, stepId) {
     const t = e.target;
     const { sec, q } = locate(t);
     if (t.dataset.set) {
+      if (t.type === "radio" && !t.checked) return;
       state.settings[t.dataset.set] = t.type === "checkbox" ? t.checked : t.value;
+      if (t.dataset.set === "total_items") {
+        // Starting a pool: begin from the suggested split; clearing it gives everyone every question
+        if (t.value === "") state.sections.forEach((sec) => { sec.ask = null; });
+        else {
+          const sug = suggestSplit(poolSizes(), Number(t.value));
+          state.sections.forEach((sec, i) => { sec.ask = sug[i]; });
+        }
+        markDirty();
+        const pos = t.selectionStart;
+        draw();
+        const again = box.querySelector('[data-set="total_items"]');
+        again?.focus();
+        try { again?.setSelectionRange(pos, pos); } catch { /* number inputs */ }
+        return;
+      }
+    } else if (t.dataset.ask != null && sec) {
+      sec.ask = t.value === "" ? 0 : Math.max(0, Math.min(sec.questions.length, Number(t.value)));
+      drawPoolNote();
+    } else if (t.dataset.pair != null && q) {
+      const p = q.pairs[Number(t.dataset.pair)];
+      p[t.dataset.pf] = t.value;
+      if (q.qtype === "crossword") {
+        const prev = t.closest(".fb-q").querySelector("[data-cwprev]");
+        if (prev) prev.innerHTML = crosswordPreview(q);
+      }
     } else if (t.dataset.sf && sec) {
       sec[t.dataset.sf] = t.value;
     } else if (t.dataset.qf && q) {
       const f = t.dataset.qf;
       if (f === "qtype") {
         const next = newQuestion(t.value);
+        if (PAIRED.includes(t.value) && !PAIRED.includes(q.qtype)) Object.assign(q, { pairs: blankPairs(), points: next.points, question: q.question || next.question });
         Object.assign(q, { qtype: t.value, options: QTYPE[t.value].choices && QTYPE[q.qtype].choices ? q.options : next.options, correct: [], accepted: "" });
         markDirty();
         return draw();
@@ -258,7 +404,7 @@ export async function renderFormBuilder(main, program, stepId) {
     if (!b) return;
     const { si, qi, sec, q } = locate(b);
     const act = b.dataset.act;
-    if (act === "add-s") state.sections.push({ id: null, title: "", description: "", questions: [newQuestion()] });
+    if (act === "add-s") state.sections.push({ id: null, title: "", description: "", ask: null, questions: [newQuestion()] });
     if (act === "s-up") swap(state.sections, si, si - 1);
     if (act === "s-down") swap(state.sections, si, si + 1);
     if (act === "s-del") {
@@ -277,6 +423,16 @@ export async function renderFormBuilder(main, program, stepId) {
     if (act === "q-copy") sec.questions.splice(qi + 1, 0, { ...structuredClone(q), id: null });
     if (act === "q-del") sec.questions.splice(qi, 1);
     if (act === "add-opt") q.options.push("");
+    if (act === "add-pair" || act === "del-pair") {
+      const before = q.pairs.length;
+      if (act === "add-pair") q.pairs.push({ term: "", def: "" });
+      else q.pairs.splice(Number(b.dataset.p), 1);
+      if (Number(q.points) === before) q.points = q.pairs.length;   // points follow the rows unless changed by hand
+    }
+    if (act === "use-split") {
+      const sug = suggestSplit(poolSizes(), Number(state.settings.total_items));
+      state.sections.forEach((s2, i) => { s2.ask = sug[i]; });
+    }
     if (act === "del-opt") {
       const oi = Number(b.dataset.o);
       q.options.splice(oi, 1);
@@ -300,6 +456,17 @@ export async function renderFormBuilder(main, program, stepId) {
       for (const q of sec.questions) {
         n += 1;
         if (!q.question.trim()) problems.push(`Question ${n} has no text.`);
+        if (PAIRED.includes(q.qtype)) {
+          const rows = q.pairs.filter((p) => p.term.trim() || p.def.trim());
+          const label = q.qtype === "crossword" ? "words" : "pairs";
+          if (rows.length < 2) problems.push(`Question ${n} needs at least two ${label}.`);
+          if (rows.some((p) => !p.term.trim() || !p.def.trim())) problems.push(`Question ${n}: fill in both sides of every row.`);
+          if (q.qtype === "matching" && new Set(rows.map((p) => p.def.trim().toLowerCase())).size < rows.length) problems.push(`Question ${n}: each definition must be different.`);
+          if (q.qtype === "crossword") {
+            if (rows.some((p) => p.term.trim() && normWord(p.term).length < 2)) problems.push(`Question ${n}: each answer needs at least two letters (A to Z).`);
+            if (new Set(rows.map((p) => normWord(p.term))).size < rows.length) problems.push(`Question ${n}: each answer must be different.`);
+          }
+        }
         if (QTYPE[q.qtype].choices && q.options.filter((o) => o.trim()).length < 2) problems.push(`Question ${n} needs at least two choices.`);
         if (isQuiz) {
           if (QTYPE[q.qtype].choices || q.qtype === "truefalse") {
@@ -315,6 +482,13 @@ export async function renderFormBuilder(main, program, stepId) {
     const s = state.settings;
     if (s.unlock_at && s.close_at && new Date(s.close_at) <= new Date(s.unlock_at)) problems.push("The closing date is before the opening date.");
     if (s.passing_score !== "" && (Number(s.passing_score) < 0 || Number(s.passing_score) > 100)) problems.push("The pass mark must be between 0 and 100.");
+    if (isQuiz && s.total_items !== "") {
+      const total = Number(s.total_items);
+      const sum = state.sections.reduce((a, sec) => a + (sec.ask ?? sec.questions.length), 0);
+      if (!(total >= 1)) problems.push("Total Items must be 1 or more, or empty.");
+      else if (total > n) problems.push(`Total Items is ${total}, but there are only ${n} questions.`);
+      else if (sum !== total) problems.push(`The sections ask for ${sum} questions, but Total Items is ${total}. Click Use This or change "Ask".`);
+    }
     return problems;
   };
 
@@ -335,7 +509,9 @@ export async function renderFormBuilder(main, program, stepId) {
           time_limit_minutes: s.time_limit_minutes === "" ? null : Number(s.time_limit_minutes),
           max_attempts: s.max_attempts === "" ? null : Number(s.max_attempts),
           passing_score: s.passing_score === "" ? null : Number(s.passing_score),
-          shuffle_questions: !!s.shuffle_questions, shuffle_options: !!s.shuffle_options, show_answers: !!s.show_answers,
+          shuffle_questions: !!s.shuffle_questions, shuffle_options: !!s.shuffle_options,
+          answers_release: s.answers_release, show_answers: s.answers_release === "after_submit",
+          total_items: s.total_items === "" ? null : Number(s.total_items),
           secure_mode: !!s.secure_mode,
         } : { identity_mode: s.identity_mode, thank_you: s.thank_you.trim() || null }),
       }).eq("id", step.id);
@@ -343,7 +519,9 @@ export async function renderFormBuilder(main, program, stepId) {
 
       // Give new sections and questions their ids here, so everything saves in a few requests
       state.sections.forEach((sec) => { sec.id ??= uid(); sec.questions.forEach((q) => { q.id ??= uid(); }); });
-      const sectionRows = state.sections.map((sec, i) => ({ id: sec.id, step_id: step.id, position: i + 1, title: sec.title.trim() || null, description: sec.description.trim() || null }));
+      const pooled = isQuiz && s.total_items !== "";
+      const sectionRows = state.sections.map((sec, i) => ({ id: sec.id, step_id: step.id, position: i + 1, title: sec.title.trim() || null, description: sec.description.trim() || null,
+        ask_count: pooled && (sec.ask ?? sec.questions.length) < sec.questions.length ? (sec.ask ?? sec.questions.length) : null }));
       let pos = 0;
       const questionRows = [];
       const keyRows = [];
@@ -353,7 +531,22 @@ export async function renderFormBuilder(main, program, stepId) {
           // Drop empty choices; keep the correct answers pointing at the same text
           let options = [];
           let correct = [];
-          if (QTYPE[q.qtype].choices) {
+          let matchChoices = null;
+          let layout = null;
+          if (q.qtype === "matching") {
+            const rows = q.pairs.filter((p) => p.term.trim() && p.def.trim()).map((p) => ({ term: p.term.trim(), def: p.def.trim() }));
+            options = rows.map((p) => p.term);
+            // Definitions are stored mixed up, so their order doesn't give the answers away
+            const mixed = rows.map((p, i) => ({ def: p.def, i, r: Math.random() })).sort((a, b) => a.r - b.r);
+            matchChoices = mixed.map((x) => x.def);
+            correct = rows.map((_, i) => mixed.findIndex((x) => x.i === i));
+            layout = { display: q.display === "lines" ? "lines" : "dropdown" };
+          } else if (q.qtype === "crossword") {
+            const rows = q.pairs.filter((p) => p.term.trim() && p.def.trim());
+            options = rows.map((p) => p.def.trim());
+            correct = rows.map((p) => normWord(p.term));
+            layout = buildCrossword(correct);
+          } else if (QTYPE[q.qtype].choices) {
             const keep = q.options.map((o, i) => ({ o: o.trim(), i })).filter((x) => x.o);
             options = keep.map((x) => x.o);
             correct = keep.map((x, newI) => (q.correct.includes(x.i) ? newI : null)).filter((x) => x !== null);
@@ -366,7 +559,7 @@ export async function renderFormBuilder(main, program, stepId) {
           questionRows.push({
             id: q.id, step_id: step.id, section_id: sec.id, position: pos, qtype: q.qtype,
             question: q.question.trim(), description: q.description.trim() || null, options,
-            points: isQuiz ? Number(q.points) || 0 : 0, required: !!q.required,
+            points: isQuiz ? Number(q.points) || 0 : 0, required: !!q.required, match_choices: matchChoices, layout,
           });
           if (isQuiz) keyRows.push({ question_id: q.id, correct, correct_option: typeof correct[0] === "number" ? correct[0] : null });
         }
@@ -415,6 +608,12 @@ export async function renderFormBuilder(main, program, stepId) {
         ["Part 1: Basics", "Which of these are coaching behaviours?", "Multiple Choice", "Asking open questions", "Giving all the answers", "Listening", "Interrupting", "", "", "1; 3", 3, "Yes"],
         ["Part 2: Applying It", "Feedback should be specific.", "True/False", "", "", "", "", "", "", "True", 1, "Yes"],
         ["Part 2: Applying It", "Name the skill of understanding others' feelings.", "Short Answer", "", "", "", "", "", "", "Empathy; Being empathetic", 4, "No"],
+        ["Part 3: Key Terms", "A fixed amount the patient pays at each visit", "Matching", "", "", "", "", "", "", "Copay", 1, "Yes"],
+        ["Part 3: Key Terms", "The amount paid before insurance starts paying", "Matching", "", "", "", "", "", "", "Deductible", 1, "Yes"],
+        ["Part 3: Key Terms", "A refusal by the insurer to pay a claim", "Matching", "", "", "", "", "", "", "Denial", 1, "Yes"],
+        ["Part 4: Crossword", "Checking that a patient's insurance is active", "Crossword", "", "", "", "", "", "", "Eligibility", 1, "Yes"],
+        ["Part 4: Crossword", "The insurance company that pays the claim", "Crossword", "", "", "", "", "", "", "Payer", 1, "Yes"],
+        ["Part 4: Crossword", "A request for payment sent to the insurer", "Crossword", "", "", "", "", "", "", "Claim", 1, "Yes"],
       ] : [
         ["About The Program", "How would you rate this program overall?", "Rating", "", "", "", "", "", "", "Yes"],
         ["About The Program", "The content was relevant to my role.", "Agree/Disagree", "", "", "", "", "", "", "Yes"],
@@ -428,7 +627,8 @@ export async function renderFormBuilder(main, program, stepId) {
       const help = isQuiz ? [
         ["How To Fill In The Questions Sheet"],
         ["Section", "Questions with the same section name are grouped together, in order. Leave empty for no sections."],
-        ["Type", "Single Choice, Multiple Choice, True/False or Short Answer"],
+        ["Type", "Single Choice, Multiple Choice, True/False, Short Answer, Matching or Crossword"],
+        ["Matching / Crossword", "One row per term: the definition (or clue) in Question, the term in Correct Answer. Rows next to each other in the same section become one question. Points are per row."],
         ["Choice 1 to 6", "The answer choices (Single Choice and Multiple Choice only)."],
         ["Correct Answer", "Single Choice: the choice number (e.g. 2). Multiple Choice: every correct number, separated by ; (e.g. 1; 3). True/False: True or False. Short Answer: accepted answers separated by ;"],
         ["Points", "How many points the question is worth (whole number)."],
@@ -498,6 +698,7 @@ const TYPE_NAMES = {
   "single choice": "single", "multiple choice": "multi", "true/false": "truefalse", "true / false": "truefalse", "truefalse": "truefalse",
   "short answer": "short", "rating": "rating", "agree/disagree": "likert", "agree / disagree": "likert", "likert": "likert",
   "0-10 scale": "nps", "0 to 10 scale": "nps", "nps": "nps", "short text": "text", "long text": "paragraph", "paragraph": "paragraph",
+  "matching": "matching", "matching type": "matching", "connect the dots": "matching", "crossword": "crossword",
 };
 
 function parseTemplate(rows, isQuiz) {
@@ -512,13 +713,31 @@ function parseTemplate(rows, isQuiz) {
     const question = get(row, "Question");
     if (!question) return;
     const qtype = TYPE_NAMES[get(row, "Type").toLowerCase()];
-    if (!qtype || (isQuiz ? !["single", "multi", "truefalse", "short"].includes(qtype) : ["truefalse", "short"].includes(qtype))) {
+    if (!qtype || (isQuiz ? !["single", "multi", "truefalse", "short", "matching", "crossword"].includes(qtype) : ["truefalse", "short", "matching", "crossword"].includes(qtype))) {
       errors.push(`Row ${line}: unknown type “${get(row, "Type")}”.`);
+      return;
+    }
+    // Matching / Crossword: each row is one term; rows next to each other in a section make one question
+    if (qtype === "matching" || qtype === "crossword") {
+      const term = get(row, "Correct Answer");
+      if (!term) { errors.push(`Row ${line}: add the term in Correct Answer.`); return; }
+      if (qtype === "crossword" && term.toUpperCase().replace(/[^A-Z]/g, "").length < 2) { errors.push(`Row ${line}: a crossword answer needs at least two letters.`); return; }
+      const name = get(row, "Section");
+      let sec = sections.at(-1);
+      if (!sec || sec.title !== name) { sec = { id: null, title: name, description: "", ask: null, questions: [] }; sections.push(sec); }
+      let q = sec.questions.at(-1);
+      if (!q || q.qtype !== qtype || q.pairs.length >= MAX_PAIRS) {
+        q = { id: null, qtype, question: qtype === "matching" ? "Match each term to its definition." : "Complete the crossword.", description: "",
+          options: [], correct: [], accepted: "", points: 0, required: !/^(no|n|false|0)$/i.test(get(row, "Required")), pairs: [], display: "dropdown" };
+        sec.questions.push(q);
+      }
+      q.pairs.push({ term, def: question });
+      q.points += Number(get(row, "Points") || 1);
       return;
     }
     const choices = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => get(row, `Choice ${n}`) || get(row, `Option ${n}`)).filter(Boolean);
     const q = {
-      id: null, qtype, question, description: "", options: [], correct: [], accepted: "",
+      id: null, qtype, question, description: "", options: [], correct: [], accepted: "", pairs: [], display: "dropdown",
       points: isQuiz ? Number(get(row, "Points") || 1) : 0, required: !/^(no|n|false|0)$/i.test(get(row, "Required")),
     };
     const answer = get(row, "Correct Answer");
@@ -545,7 +764,7 @@ function parseTemplate(rows, isQuiz) {
     const name = get(row, "Section");
     let sec = sections.at(-1);
     if (!sec || sec.title !== name) {
-      sec = { id: null, title: name, description: "", questions: [] };
+      sec = { id: null, title: name, description: "", ask: null, questions: [] };
       sections.push(sec);
     }
     sec.questions.push(q);

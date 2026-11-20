@@ -2,7 +2,8 @@
 // (summary per question, every response, names only when shared).
 //   #/programs/<program>/results/<step>
 import { sb } from "../supabase.js";
-import { brand, esc, toast, openModal, icons, fmtDate, fmtDateTime, QTYPE, LIKERT, LIBS, loadScript, safeName } from "../ui.js";
+import { brand, esc, toast, openModal, icons, fmtDate, fmtDateTime, QTYPE, LIKERT, LIBS, loadScript, safeName, downloadBlob } from "../ui.js";
+import { reviewItems, reviewPdf, reviewFileName, loadPdfLib } from "../answer-review.js";
 
 export async function renderFormResults(main, program, stepId, me) {
   main.innerHTML = '<div class="empty" style="margin-top:24px"><div>Loading…</div></div>';
@@ -28,6 +29,7 @@ export async function renderFormResults(main, program, stepId, me) {
   const ctx = { main, program, step, questions: questions ?? [], enrolled: (enrolled ?? [])
     .filter((e) => !(e.enrollment_exclusions ?? []).some((x) => x.step_id === stepId)) // only learners who have this step
     .sort((a, b) => a.learner.full_name.localeCompare(b.learner.full_name)), me, reload, header, sectionTitle };
+  ctx.sections = sections ?? [];
   return step.step_type === "assessment" ? assessmentResults(ctx) : surveyResults(ctx);
 }
 
@@ -45,7 +47,7 @@ const exitsPill = (n) => (n ? `<span class="pill crit">${n} Exit${n === 1 ? "" :
 // =====================================================================
 // Assessment
 // =====================================================================
-async function assessmentResults({ main, program, step, questions, enrolled, me, reload, header }) {
+async function assessmentResults({ main, program, step, questions, sections, enrolled, me, reload, header }) {
   const ids = enrolled.map((e) => e.id);
   const { data: attempts } = ids.length
     ? await sb.from("assessment_attempts").select("*, changer:profiles!assessment_attempts_changed_by_fkey(full_name)").eq("step_id", step.id).in("enrollment_id", ids).order("started_at")
@@ -81,18 +83,38 @@ async function assessmentResults({ main, program, step, questions, enrolled, me,
   const times = done.map(minutes).filter((m) => m != null);
   const avgTime = times.length ? Math.round(times.reduce((a, b) => a + b, 0) / times.length) : null;
 
-  // Per question: share of submitted attempts that earned the points
+  // Per question: average share of the points earned by the attempts that had it
   const graded = done.filter((a) => a.results);
   const qStats = questions.map((q) => {
     const seen = graded.filter((a) => a.results[q.id] !== undefined);
-    const right = seen.filter((a) => Number(a.results[q.id]) > 0).length;
-    return { q, seen: seen.length, rate: seen.length ? Math.round((right / seen.length) * 100) : null };
+    const pts = Number(q.points) || 0;
+    const share = seen.reduce((t, a) => t + (pts ? Math.min(1, Number(a.results[q.id]) / pts) : Number(a.results[q.id]) > 0 ? 1 : 0), 0);
+    return { q, seen: seen.length, rate: seen.length ? Math.round((share / seen.length) * 100) : null };
   });
+  const keys = Object.fromEntries(questions.map((q) => [q.id, (Array.isArray(q.assessment_answer_keys) ? q.assessment_answer_keys[0] : q.assessment_answer_keys)?.correct ?? []]));
+  const pool = (sections ?? []).some((s) => s.ask_count != null);
+  const perLearner = step.total_items ?? questions.length;
+  // Each learner's answer sheet: their best attempt that has answers
+  const bestWithAnswers = (r) => r.mine.filter((a) => a.answers && a.status !== "manual")
+    .sort((x, y) => Number(y.percent ?? 0) - Number(x.percent ?? 0) || new Date(y.submitted_at) - new Date(x.submitted_at))[0];
+  const byQ = Object.fromEntries(questions.map((q) => [q.id, q]));
+  const sheet = (r) => {
+    const a = bestWithAnswers(r);
+    if (!a) return null;
+    const ids = a.question_order?.questions ?? questions.map((q) => q.id);
+    const qs = ids.map((id) => byQ[id]).filter(Boolean);
+    return { attempt: a, items: reviewItems({ questions: qs, sections, answers: a.answers, results: a.results, keys }) };
+  };
+  const released = step.answers_release === "after_submit" ? "auto" : step.answers_released_at ? "yes" : "no";
 
   const PILL = { Passed: "good", "Not Passed": "crit", "In Progress": "prog", "Not Started": "" };
   main.innerHTML = `
-    ${header(`Results: ${esc(step.title)}`, `${questions.length} questions${step.passing_score != null ? ` · Pass mark ${Number(step.passing_score)}%` : ""}${step.max_attempts ? ` · ${step.max_attempts} attempt${step.max_attempts === 1 ? "" : "s"} allowed` : ""}`,
-      `<button class="btn" data-export>${icons.download} Export Excel</button>`)}
+    ${header(`Results: ${esc(step.title)}`, `${pool ? `${perLearner} of ${questions.length} questions per learner` : `${questions.length} questions`}${step.passing_score != null ? ` · Pass mark ${Number(step.passing_score)}%` : ""}${step.max_attempts ? ` · ${step.max_attempts} attempt${step.max_attempts === 1 ? "" : "s"} allowed` : ""}`,
+      `${released === "auto" ? '<span class="pill teal">Answers Shown After Submitting</span>'
+        : released === "yes" ? `<span class="pill good">Answers Released</span><button class="btn" data-release="0">${icons.lock} Unrelease</button>`
+        : `<span class="pill warn">Answers Not Released</span><button class="btn" data-release="1">${icons.check} Release Answers</button>`}
+       <button class="btn" data-pdfall>${icons.download} Download All</button>
+       <button class="btn" data-export>${icons.download} Export Excel</button>`)}
     <div class="kpi-grid">
       <div class="card kpi"><span class="label">Learners Who Took It</span><b>${tried.length}<small> / ${enrolled.length}</small></b><span class="muted small">enrolled learners</span></div>
       <div class="card kpi"><span class="label">Average Best Score</span><b>${avgBest == null ? "–" : `${avgBest}%`}</b><span class="muted small">each learner's best attempt</span></div>
@@ -114,6 +136,7 @@ async function assessmentResults({ main, program, step, questions, enrolled, me,
             <td>${esc(fmtDateTime(r.last))}</td>
             <td class="actions">
               ${r.mine.length ? `<button class="btn sm" data-attempts="${r.e.id}">Attempts</button>` : ""}
+              ${bestWithAnswers(r) ? `<button class="btn sm ghost icon" data-pdf="${r.e.id}" title="Download answers (PDF)" aria-label="Download answers">${icons.download}</button>` : ""}
               ${r.usedUp ? `<button class="btn sm" data-retake="${r.e.id}">Give Another Attempt</button>` : ""}
               ${isAdmin ? `<button class="btn sm" data-enter="${r.e.id}">Enter Score</button>` : ""}
             </td>
@@ -123,9 +146,9 @@ async function assessmentResults({ main, program, step, questions, enrolled, me,
     <h2 class="section-title" style="margin-top:22px">Question Analysis</h2>
     <div class="table-wrap">
       <table class="data">
-        <thead><tr><th>#</th><th>Question</th><th>Type</th><th>Points</th><th>Answered Correctly</th></tr></thead>
+        <thead><tr><th>#</th><th>Question</th><th>Type</th><th>Points</th><th>Times Given</th><th>Answered Correctly</th></tr></thead>
         <tbody>${qStats.map((s, i) => `
-          <tr><td>${i + 1}</td><td>${esc(s.q.question)}</td><td>${esc(QTYPE[s.q.qtype]?.label ?? "")}</td><td>${Number(s.q.points)}</td>
+          <tr><td>${i + 1}</td><td>${esc(s.q.question)}</td><td>${esc(QTYPE[s.q.qtype]?.label ?? "")}</td><td>${Number(s.q.points)}</td><td>${s.seen}</td>
             <td>${s.rate == null ? '<span class="muted">No answers yet</span>' : `<div class="meter ${s.rate < 50 ? "low" : ""}"><i style="width:${s.rate}%"></i></div> ${s.rate}% <span class="muted small">of ${s.seen}</span>`}</td></tr>`).join("")}</tbody>
       </table>
     </div>`;
@@ -140,6 +163,51 @@ async function assessmentResults({ main, program, step, questions, enrolled, me,
     if (g) giveAttempt(byEnrollment[g.dataset.retake]);
     if (a) showAttempts(byEnrollment[a.dataset.attempts]);
     if (m) changeScore(byEnrollment[m.dataset.enter], null);
+    const d = ev.target.closest("[data-pdf]");
+    if (d) downloadOne(byEnrollment[d.dataset.pdf]).catch((err) => toast(err.message, "err"));
+  });
+
+  // Release / Unrelease the correct answers
+  main.querySelector("[data-release]")?.addEventListener("click", (ev) => {
+    const release = ev.currentTarget.dataset.release === "1";
+    openModal({
+      title: release ? "Release Answers?" : "Unrelease Answers?",
+      intro: release
+        ? "Learners who have passed or used all their attempts can now open Review Answers. They only see the questions they were given."
+        : "Learners won't be able to open Review Answers until you release them again.",
+      body: "",
+      submitLabel: release ? "Release Answers" : "Unrelease",
+      onSubmit: async () => {
+        const { error } = await sb.rpc("release_assessment_answers", { p_step: step.id, p_release: release });
+        if (error) throw new Error(/function|schema cache/i.test(error.message) ? "Run database update 22 first." : error.message);
+        toast(release ? "Answers released." : "Answers unreleased.");
+        reload();
+      },
+    });
+  });
+
+  // Answer sheets as PDF: one learner, or everyone in a ZIP
+  const pdfFor = (Pdf, r) => {
+    const s2 = sheet(r);
+    return s2 && reviewPdf(Pdf, { programTitle: program.title, stepTitle: step.title, learner: r.e.learner.full_name, email: r.e.learner.email,
+      attempt: s2.attempt, items: s2.items, platform: brand.platform });
+  };
+  async function downloadOne(r) {
+    const Pdf = await loadPdfLib();
+    pdfFor(Pdf, r)?.save(reviewFileName(r.e.learner.full_name, step.title));
+  }
+  main.querySelector("[data-pdfall]").addEventListener("click", async (ev) => {
+    const btn = ev.currentTarget;
+    const list = rows.filter((r) => bestWithAnswers(r));
+    if (!list.length) { toast("No submitted answers to download yet.", "err"); return; }
+    btn.disabled = true;
+    try {
+      const [Pdf] = await Promise.all([loadPdfLib(), loadScript(LIBS.jszip)]);
+      const zip = new window.JSZip();
+      for (const r of list) zip.file(reviewFileName(r.e.learner.full_name, step.title), pdfFor(Pdf, r).output("blob"));
+      downloadBlob(await zip.generateAsync({ type: "blob" }), `${safeName(step.title)} - All Answers.zip`);
+      toast(`${list.length} answer sheet${list.length === 1 ? "" : "s"} downloaded.`);
+    } catch (err) { toast(err.message, "err"); } finally { btn.disabled = false; }
   });
 
   function showAttempts(r) {
@@ -260,7 +328,7 @@ async function assessmentResults({ main, program, step, questions, enrolled, me,
       })) : [["No test activity recorded."]], [26, 32, 9, 20, 40, 13]);
       add("Questions", qStats.map((s, i) => ({
         "#": i + 1, Question: s.q.question, Type: QTYPE[s.q.qtype]?.label, Points: Number(s.q.points),
-        "Answered Correctly %": s.rate ?? "", "Times Answered": s.seen,
+        "Answered Correctly %": s.rate ?? "", "Times Given": s.seen,
       })), [4, 60, 24, 8, 20, 15]);
       X.writeFile(wb, `${safeName(step.title)} - Assessment Results.xlsx`);
     } catch (err) { toast(err.message, "err"); }

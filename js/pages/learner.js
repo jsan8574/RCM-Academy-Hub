@@ -11,6 +11,8 @@ import { sb } from "../supabase.js";
 import { brand, team, esc, toast, openModal, icons, stepIcon, fmtDate, fmtDateTime, PROGRAM_TYPE, STEP_TYPE, LIKERT } from "../ui.js";
 import { newMessage } from "./messages.js";
 import { startSecureTest, enterFullScreen, secureRulesHtml, MAX_EXITS } from "../secure-test.js";
+import { matchingBody, wireMatching, readMatching, fillMatching, crosswordBody, wireCrossword, readCrossword, fillCrossword } from "../question-kinds.js";
+import { openReview, reviewItems } from "../answer-review.js";
 
 const UPLOAD_BUCKET = "learner-uploads";
 const VIDEO_BUCKET = "welcome-videos";
@@ -975,12 +977,16 @@ const formHeader = (back, title, sub = "") => `
 function questionField(q, n, { order = null, readonly = false } = {}) {
   const name = `q-${q.id}`;
   const dis = readonly ? "disabled" : "";
-  const choices = (order ?? q.options.map((_, i) => i));
+  const choices = (Array.isArray(order) ? order : q.options.map((_, i) => i));
   let body = "";
   if (q.qtype === "single" || q.qtype === "truefalse") {
     body = choices.map((i) => `<label class="choice"><input type="radio" name="${name}" value="${i}" ${dis}> <span>${esc(q.options[i])}</span></label>`).join("");
   } else if (q.qtype === "multi") {
     body = `<p class="muted small" style="margin:0">Select all that apply.</p>${choices.map((i) => `<label class="choice"><input type="checkbox" name="${name}" value="${i}" ${dis}> <span>${esc(q.options[i])}</span></label>`).join("")}`;
+  } else if (q.qtype === "matching") {
+    body = matchingBody(q, order && !Array.isArray(order) ? order : null);
+  } else if (q.qtype === "crossword") {
+    body = crosswordBody(q);
   } else if (q.qtype === "short" || q.qtype === "text") {
     body = `<input class="input" name="${name}" autocomplete="off" placeholder="Your answer" ${dis}>`;
   } else if (q.qtype === "paragraph") {
@@ -996,7 +1002,7 @@ function questionField(q, n, { order = null, readonly = false } = {}) {
   return `
     <div class="card question" role="group" aria-labelledby="qt-${q.id}" data-qid="${q.id}">
       <div class="q-title" id="qt-${q.id}"><span class="q-no">${n}</span> <span>${esc(q.question)}${q.required ? ' <span class="req" title="Required">*</span>' : ""}</span>
-        ${q.points != null && q.points !== 0 && ["single", "multi", "truefalse", "short"].includes(q.qtype) ? `<span class="q-pts">${Number(q.points)} pt${Number(q.points) === 1 ? "" : "s"}</span>` : ""}</div>
+        ${q.points != null && q.points !== 0 && ["single", "multi", "truefalse", "short", "matching", "crossword"].includes(q.qtype) ? `<span class="q-pts">${Number(q.points)} pt${Number(q.points) === 1 ? "" : "s"}</span>` : ""}</div>
       ${q.description ? `<p class="muted small q-hint">${esc(q.description)}</p>` : ""}
       ${body}
       <div class="q-error" hidden>This question is required.</div>
@@ -1007,7 +1013,10 @@ function readAnswers(form, questions) {
   const out = {};
   for (const q of questions) {
     const name = `q-${q.id}`;
-    if (q.qtype === "multi") {
+    if (q.qtype === "matching" || q.qtype === "crossword") {
+      const v = q.qtype === "matching" ? readMatching(form, q) : readCrossword(form, q);
+      if (v) out[q.id] = v;
+    } else if (q.qtype === "multi") {
       const vals = [...form.querySelectorAll(`input[name="${name}"]:checked`)].map((x) => Number(x.value)).sort((a, b) => a - b);
       if (vals.length) out[q.id] = vals;
     } else if (["short", "text", "paragraph"].includes(q.qtype)) {
@@ -1026,7 +1035,9 @@ function fillAnswers(form, questions, saved) {
     const v = saved?.[q.id];
     if (isBlank(v)) continue;
     const name = `q-${q.id}`;
-    if (q.qtype === "multi") v.forEach((x) => { const el = form.querySelector(`input[name="${name}"][value="${x}"]`); if (el) el.checked = true; });
+    if (q.qtype === "matching") fillMatching(form, q, v);
+    else if (q.qtype === "crossword") fillCrossword(form, q, v);
+    else if (q.qtype === "multi") v.forEach((x) => { const el = form.querySelector(`input[name="${name}"][value="${x}"]`); if (el) el.checked = true; });
     else if (["short", "text", "paragraph"].includes(q.qtype)) { const el = form.querySelector(`[name="${name}"]`); if (el) el.value = v; }
     else { const el = form.querySelector(`input[name="${name}"][value="${v}"]`); if (el) el.checked = true; }
   }
@@ -1062,12 +1073,29 @@ function sectionsHtml(questions, sections, render) {
   }).join("");
 }
 
-const answerText = (q, v) => {
-  if (isBlank(v)) return "No answer";
-  if (q.qtype === "multi") return v.map((i) => q.options[i]).join(", ");
-  if (q.qtype === "single" || q.qtype === "truefalse") return q.options[v] ?? "";
-  return String(v);
-};
+// Preview: draw questions the way the database does for a learner (a random set per section when asked)
+function previewDraw(questions, sections) {
+  const ask = Object.fromEntries(sections.map((s) => [s.id, s.ask_count]));
+  const groups = new Map();
+  for (const q of questions) { if (!groups.has(q.section_id)) groups.set(q.section_id, []); groups.get(q.section_id).push(q); }
+  const keep = new Set();
+  for (const [sid, list] of groups) {
+    const n = ask[sid] ?? list.length;
+    list.slice().sort(() => Math.random() - 0.5).slice(0, n).forEach((q) => keep.add(q.id));
+  }
+  return questions.filter((q) => keep.has(q.id));
+}
+
+// Learners see the answers once they're released (or straight after submitting, if set that way)
+// and they've passed or used all their attempts
+const answersOpen = (step) => step.answers_release === "after_submit" || !!step.answers_released_at;
+
+async function showReview(step) {
+  const { data, error } = await sb.rpc("assessment_review", { p_step: step.id });
+  if (error) { toast(error.message, "err"); return; }
+  const items = reviewItems({ questions: data.questions, sections: data.sections, answers: data.attempt.answers, results: data.attempt.results, keys: data.keys });
+  openReview({ title: step.title, attempt: data.attempt, items, name: mode.name, email: mode.email });
+}
 
 // ---------------------------------------------------------------------
 // Assessment
@@ -1095,21 +1123,33 @@ async function assessmentPage(main, ctx, programId, stepId) {
   const now = Date.now();
   const notOpen = step.unlock_at && new Date(step.unlock_at).getTime() > now;
   const closed = step.close_at && new Date(step.close_at).getTime() < now;
-  const points = questions.reduce((a, q) => a + Number(q.points || 0), 0);
+  // How many questions each learner gets (Total Items / question pools)
+  let count, points;
+  if (mode.preview) {
+    const drawn = previewDraw(questions, sections);
+    count = drawn.length;
+    const pooled = sections.some((s) => s.ask_count != null);
+    points = pooled ? null : questions.reduce((a, q) => a + Number(q.points || 0), 0);
+  } else {
+    const { data: outline } = await sb.rpc("assessment_outline", { p_step: stepId });
+    count = outline?.questions ?? questions.length;
+    points = outline?.points ?? null;
+  }
+  const canReview = !mode.preview && answersOpen(step) && finished.some((a) => a.status !== "manual") && (passed || left === 0);
 
   let status;
   if (passed) status = `<div class="result good"><h2>You Passed 🎉</h2><p>Your best score: <b>${best}%</b></p></div>`;
   else if (notOpen) status = `<div class="notice info">This assessment opens ${esc(fmtDateTime(step.unlock_at))}.</div>`;
   else if (closed) status = `<div class="notice">This assessment closed on ${esc(fmtDateTime(step.close_at))}.${best != null ? ` Your best score: <b>${best}%</b>.` : ""}</div>`;
   else if (left === 0 && !open) status = `<div class="notice">You've used all your attempts.${best != null ? ` Your best score: <b>${best}%</b>.` : ""} Contact the ${team()} if you need help.</div>`;
-  else if (!questions.length) status = '<div class="notice info">This assessment isn\'t ready yet. Please check back later.</div>';
+  else if (!count) status = '<div class="notice info">This assessment isn\'t ready yet. Please check back later.</div>';
 
   main.innerHTML = `
     ${formHeader(back, step.title)}
     <section class="card quiz-intro">
       ${step.description ? `<div class="prose-text">${esc(step.description)}</div>` : ""}
       <div class="chips light">
-        <span class="chip">${icons.assessment} ${questions.length} Question${questions.length === 1 ? "" : "s"} · ${points} Point${points === 1 ? "" : "s"}</span>
+        <span class="chip">${icons.assessment} ${count} Question${count === 1 ? "" : "s"}${points != null ? ` · ${Number(points)} Point${Number(points) === 1 ? "" : "s"}` : ""}</span>
         <span class="chip">${icons.clock} ${step.time_limit_minutes ? `${step.time_limit_minutes} Minute Time Limit` : "No Time Limit"}</span>
         ${step.passing_score != null ? `<span class="chip">${icons.flag} Pass Mark ${Number(step.passing_score)}%</span>` : ""}
         <span class="chip">${icons.route} ${allowed ? `${left} Of ${allowed} Attempt${allowed === 1 ? "" : "s"} Left` : "Unlimited Attempts"}</span>
@@ -1121,6 +1161,7 @@ async function assessmentPage(main, ctx, programId, stepId) {
         ${step.time_limit_minutes ? `<p class="muted">The timer starts when you click ${open ? "Continue" : "Start"}. Your answers are submitted automatically when time runs out.</p>` : ""}
         <button class="btn primary" data-start>${mode.preview ? "Try It (Preview)" : open ? "Continue Assessment →" : "Start Assessment →"}</button>`}
     </section>
+    ${canReview ? '<div style="margin-top:12px"><button class="btn" data-review>Review Answers</button></div>' : ""}
     ${finished.length ? `
       <h2 class="section-title" style="margin-top:20px">Your Attempts</h2>
       <div class="table-wrap"><table class="data">
@@ -1131,13 +1172,14 @@ async function assessmentPage(main, ctx, programId, stepId) {
 
   const begin = async (btn) => {
     if (mode.preview) {
-      return takeQuiz(main, step, sections, questions, { attempt_id: null, deadline_at: null, order: null }, back);
+      return takeQuiz(main, step, sections, previewDraw(questions, sections), { attempt_id: null, deadline_at: null, order: null }, back);
     }
     btn.disabled = true;
     const { data, error } = await sb.rpc("start_assessment", { p_step: stepId });
     if (error) { btn.disabled = false; throw new Error(error.message); }
-    takeQuiz(main, step, sections, questions, data, back);
+    takeQuiz(main, step, sections, data.questions ?? questions, data, back);
   };
+  main.querySelector("[data-review]")?.addEventListener("click", () => showReview(step));
   main.querySelector("[data-start]")?.addEventListener("click", async (ev) => {
     const btn = ev.currentTarget;
     if (!step.secure_mode) return begin(btn).catch((err) => toast(err.message, "err"));
@@ -1184,6 +1226,8 @@ function takeQuiz(main, step, sections, questions, attempt, back) {
     answeredEl.textContent = `${Object.keys(a).length} of ${ordered.length} answered`;
     if (storeKey) try { localStorage.setItem(storeKey, JSON.stringify(a)); } catch { /* private window */ }
   };
+  wireMatching(form);
+  wireCrossword(form, ordered);
   if (storeKey) try { fillAnswers(form, ordered, JSON.parse(localStorage.getItem(storeKey) ?? "{}")); } catch { /* nothing saved */ }
   form.addEventListener("input", count);
   form.addEventListener("change", count);
@@ -1266,6 +1310,7 @@ function showQuizResult(main, step, ordered, answers, data, back) {
     assessmentPageAgain(main, again);
     return;
   }
+  // Score only. The answers open in Review Answers once they're available.
   main.innerHTML = `${formHeader(back, step.title)}
     <div class="card result ${data.passed ? "good" : "warn"}">
       <h2>${data.passed ? "You Passed! 🎉" : "Not Quite There Yet"}</h2>
@@ -1273,22 +1318,11 @@ function showQuizResult(main, step, ordered, answers, data, back) {
       ${data.passed ? "" : step.passing_score != null ? `<p class="muted">You need ${Number(step.passing_score)}% to pass. Review the material and try again if you have attempts left.</p>` : ""}
       <div class="row-actions">
         <a class="btn ${data.passed ? "primary" : ""}" href="${back}">Back To Program</a>
+        ${data.review ? '<button type="button" class="btn" data-review>Review Answers</button>' : ""}
         ${data.passed ? "" : `<a class="btn primary" href="${again}">Try Again</a>`}
       </div>
-    </div>
-    <h2 class="section-title" style="margin-top:20px">Your Answers</h2>
-    <div class="stack review">${ordered.map((q, i) => {
-      const earned = Number(data.results?.[q.id] ?? 0);
-      const right = earned > 0;
-      const correct = data.correct?.[q.id];
-      const correctText = correct == null ? "" : q.qtype === "short" ? correct.join(" or ") : correct.map((x) => q.options[x]).join(", ");
-      return `<div class="card review-item ${right ? "right" : "wrong"}">
-        <div class="review-head"><span class="q-no">${i + 1}</span><strong>${esc(q.question)}</strong>
-          <span class="pill ${right ? "good" : "crit"}">${right ? "✓ Correct" : "✗ Incorrect"} · ${earned} / ${Number(q.points)}</span></div>
-        <div class="muted small">Your answer: <b>${esc(answerText(q, answers[q.id]))}</b></div>
-        ${!right && correctText ? `<div class="small">Correct answer: <b>${esc(correctText)}</b></div>` : ""}
-      </div>`;
-    }).join("")}</div>`;
+    </div>`;
+  main.querySelector("[data-review]")?.addEventListener("click", () => showReview(step));
   assessmentPageAgain(main, again);
 }
 

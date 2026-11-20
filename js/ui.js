@@ -171,6 +171,8 @@ export const QTYPE = {
   multi:     { label: "Multiple Choice (Several Answers)", forms: ["assessment", "survey"], choices: true },
   truefalse: { label: "True / False",             forms: ["assessment"] },
   short:     { label: "Short Answer",             forms: ["assessment"] },
+  matching:  { label: "Matching (Terms And Definitions)", forms: ["assessment"] },
+  crossword: { label: "Crossword",                forms: ["assessment"] },
   rating:    { label: "Rating (1 To 5 Stars)",    forms: ["survey"] },
   likert:    { label: "Agree / Disagree Scale",   forms: ["survey"] },
   nps:       { label: "0 To 10 Scale",            forms: ["survey"] },

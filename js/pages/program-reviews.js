@@ -113,6 +113,8 @@ function questionsHtml(qs) {
     const choices = ["single", "multi", "truefalse"].includes(q.qtype)
       ? `<ul>${(q.qtype === "truefalse" && !(q.options ?? []).length ? ["True", "False"] : q.options ?? []).map((o, i) => `<li class="${key.includes?.(i) ? "right" : ""}">${key.includes?.(i) ? "✓ " : ""}${esc(o)}</li>`).join("")}</ul>`
       : q.qtype === "short" ? `<div class="small">Accepted answers: <b>${esc((key ?? []).join(" · ") || "—")}</b></div>`
+      : q.qtype === "matching" ? `<ul>${(q.options ?? []).map((t, i) => `<li>${esc(t)} → <b>${esc(q.match_choices?.[key[i]] ?? "")}</b></li>`).join("")}</ul>`
+      : q.qtype === "crossword" ? `<ul>${(q.options ?? []).map((c, i) => `<li>${esc(c)} → <b>${esc(key[i] ?? "")}</b></li>`).join("")}</ul>`
       : q.qtype === "likert" ? `<div class="muted small">${LIKERT.join(" · ")}</div>`
       : q.qtype === "rating" ? '<div class="muted small">1 to 5 stars</div>'
       : q.qtype === "nps" ? '<div class="muted small">0 to 10</div>' : '<div class="muted small">Free text</div>';
