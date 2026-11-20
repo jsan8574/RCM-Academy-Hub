@@ -1,7 +1,7 @@
 // Program → Tasks: the Technical Training team's deliverables for one program,
 // who owns each, due dates counted from the session date, status, and time spent.
 import { sb } from "../supabase.js";
-import { brand, team, esc, toast, openModal, icons } from "../ui.js";
+import { brand, team as teamName, esc, toast, openModal, icons } from "../ui.js";
 
 export const TASK_STATUS = ["Not Started", "In Progress", "Done", "Blocked", "N/A"];
 export const TASK_CATS = ["Logistics", "Communications", "Content", "Assessment", "Delivery", "Evaluation", "Reporting", "Recognition", "Other"];
@@ -261,7 +261,7 @@ function editTask(program, task, team, redraw) {
       <div class="two">
         <label class="field">Category <select class="select" name="category">${TASK_CATS.map((c) => `<option ${c === t.category ? "selected" : ""}>${c}</option>`).join("")}</select></label>
         <label class="field">Owner <select class="select" name="owner"><option value="">Unassigned</option>${team.map((p) => `<option value="${p.id}" ${p.id === t.owner_id ? "selected" : ""}>${esc(p.full_name)}</option>`).join("")}</select>
-          <span class="hint">Anyone in the ${team()}</span></label>
+          <span class="hint">Anyone in the ${teamName()}</span></label>
       </div>
       <div class="two">
         <label class="field">Due Date <input class="input" type="date" name="due" value="${esc(t.due_date ?? "")}"></label>
